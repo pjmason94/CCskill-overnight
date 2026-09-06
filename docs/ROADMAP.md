@@ -13,6 +13,48 @@ What has been built is listed at the bottom. Items 1 and 2 have designs under
 item 4's honest answer - "unverified off Windows" - is now stated in the README
 rather than left implied.
 
+## 9. A circuit breaker: stop when the failures stop being about the code
+
+**The gap.** The runner has no way to tell "this step failed" from "nothing can
+succeed right now". A worker that returns nothing because the account's usage
+window is exhausted looks exactly like a worker that wrote bad code: the gate
+fails, the tree resets, the attempt is retried, a diagnostic runs, the step is
+marked `STUCK`, and the loop moves to the next step and does it again. With
+thirty-odd steps pending and every attempt failing in seconds, a run can burn
+through the entire remaining plan in about twenty minutes and mark all of it
+`STUCK`. The operator wakes to a run that reports itself finished, a plan whose
+every step needs re-running, and no work done.
+
+`HALTED` exists but covers exactly one case - a third party committing to the
+branch mid-step (`overnight.py`, in the attempt loop). Nothing covers the general
+one.
+
+**Why it is not solved by scheduling.** This was worked around by hand on
+2026-09-06 by timing an overnight launch to start in a fresh usage window, with a
+short throwaway run burning the tail of the old one. That protects the first hour
+and nothing after it: a seven- or eight-hour run crosses a window boundary in the
+middle of the night whatever time it starts. The arithmetic of when to launch is
+a symptom, not a fix.
+
+**The shape.** Count consecutive steps that end in a failure outcome having
+produced NO commit. At a threshold - two is probably right, three at most - stop
+the run rather than continue: the run ends the way the clock ending it does, with
+`SUMMARY.md` written and the remaining steps left `PENDING`, so a relaunch after
+the window resets picks up exactly where it stopped. The signal is deliberately
+"failed AND committed nothing": a step that fails its gate having committed real
+work is a code problem and the existing retry is right for it, whereas a run of
+steps that produce nothing at all is a run whose environment has gone away.
+
+**What it must not do.** It must not try to identify a usage limit specifically -
+parsing an error string for a quota message would be brittle and would miss the
+other ways an environment can vanish (the CLI logged out, the network gone, a
+model id withdrawn). The threshold is the whole mechanism.
+
+**What it costs.** Small: a counter in the loop, a stop reason, and a self-test
+fixture where the fake worker fails N times in a row with no commit. The fixture
+is the reason it was not built on the night it was diagnosed - putting untested
+runner code under an unattended run is the trade the hard rules exist to refuse.
+
 ## 1. The expected-value triage on a raised judgement
 
 **The idea.** Today a step that needs judgement stops and leaves the decision for
