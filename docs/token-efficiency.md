@@ -90,13 +90,30 @@ experiment on one real step before it goes into every brief, measured with
 `tools/tally.py` against the same step run without it, not adopted on the
 argument alone.
 
-**3. The cache TTL.** Every cache write in every log is at the 1-hour TTL
-(`ephemeral_1h_input_tokens`, with `ephemeral_5m` at zero throughout). A 1-hour
-write costs 2x base input where a 5-minute write costs 1.25x. Across the sample
-that difference is about 9% of the total bill. **Not a recommendation yet**: a
-step whose gates take ten minutes would miss a 5-minute cache and pay far more
-than it saved, and whether the runner can influence the TTL at all is unverified.
-Worth one look at the Claude Code documentation before anything is changed.
+**3. Do NOT touch the cache TTL - but know what moves it.** Every cache write in
+every log is at the 1-hour TTL (`ephemeral_1h_input_tokens`, with `ephemeral_5m`
+at zero throughout), billed at 2x base input where a 5-minute write is 1.25x.
+Forcing 5m would cut writes by 37.5%, about $4.14 of the sample's $44 - and it is
+configurable, with `promptCacheTtl` in `settings.json` or
+`CLAUDE_CODE_PROMPT_CACHE_TTL` (Claude Code 2.1.242 or later), plus the blunt
+`FORCE_PROMPT_CACHING_5M=1`.
+
+**It would be a mistake.** The 1-hour TTL is the only reason a worker ever starts
+warm: the gaps between steps in these runs are 17 to 65 minutes, every one of
+which a 5-minute cache would miss. It also has to survive a worker's own slow
+gates mid-step. The gross saving is real and the net is much smaller, and the
+risk is all downside.
+
+Two things the operator should know instead, because neither is under the
+runner's control and both change the bill:
+
+- **On a Claude subscription within plan, the main conversation already gets 1h
+  and subagents get 5m.** On an API key or usage credits, everything gets 5m.
+  **And when a subscription's limit is exceeded, the main conversation silently
+  drops to 5m too** - so a run late in a billing period has a different cost
+  profile than the same run early in one, with no signal in the log.
+- The 5-minute default on subagents is one more reason the subagent lever in
+  item 2 is narrower than it looks.
 
 **4. The tool list, for safety first and tokens second.** A worker is given
 `Artifact`, `CronCreate`, `CronDelete`, `PushNotification`, `RemoteTrigger`,
@@ -125,13 +142,59 @@ measurement, and the answer is no.
 - **Tailoring the tool-usage note per worker kind.** The note is 300 bytes. Per
   kind it would still be 300 bytes.
 - **Whether prompt caching survives across separate `claude -p` processes.** It
-  does. Cold first calls write 22 to 30k tokens; later workers in the same run
-  read 21 to 33k from cache on their *first* call, so the fixed prefix is shared
-  across processes. Nothing to fix.
+  does, conditionally - see the section below, which is worth reading because the
+  conditions are not obvious.
 - **Whether the v1.0.1 nudge changed behaviour.** Not separable from the sample:
   the note landed after these runs, and the workers that used PowerShell heavily
   versus Bash heavily differ by project convention, not by the note. Re-measure
   with `tools/tally.py` after the next run rather than reasoning about it.
+
+## Separate workers do share cache, but the key is narrow
+
+Each worker is its own `claude -p` process, so it is fair to ask whether any of
+them start warm. They do, and the evidence is each worker's *first* API call: a
+cold one writes 51 to 61k tokens and reads nothing, a warm one writes 26 to 29k
+and reads 21 to 33k. Same total prefix either way, about 55k; the difference is
+how much of it had to be paid for again.
+
+Claude Code's cache key includes the **model**, the **effort level**, the
+**working directory**, the tool definitions and a git-status snapshot. Laid
+against the FinKit run in start order, that explains almost all of it:
+
+| start | step | model/effort | first call | why |
+|---|---|---|---|---|
+| 10:11 | 3b-ref-params a1 | sonnet/med | cold | first of its key |
+| 10:28 | 3b-ref-params a2 | sonnet/med | **warm** | 17 min later |
+| 10:42 | reflect-0 | opus/**high** | cold | first opus/high |
+| 10:48 | 3b-exempt-balances | sonnet/med | **warm** | 20 min |
+| 13:40 | 3c-flow-denominator | sonnet/med | cold | 2h24 gap, expired |
+| 13:49 | 3c-annual a1 | opus/**med** | cold | first opus/med |
+| 14:08 | review:3c-annual | opus/**high** | cold | 3h26 since reflect-0 |
+| 14:27 | 3c-annual rework | opus/med | **warm** | 38 min |
+| 15:32 | 3c-rate-conversion | opus/med | **warm** | 50 min |
+| 15:52 | 3c-components | opus/med | **warm** | 20 min |
+| 16:09 | 3b-diff-classifier | sonnet/med | **warm** | unexplained: 2h20 gap |
+
+**The effort level is what separates a review from a build.** The review at 14:08
+started cold nineteen minutes after a build of the same model, because
+`defaults` gives builds `medium` and reviews `high`, and those are two caches. A
+run that alternates build and review is running two cache namespaces, not one.
+The last row is not explained by any of this and is recorded as an anomaly rather
+than smoothed over.
+
+**What it is worth.** A cold Opus start costs about $0.55 against $0.29 warm, so
+roughly $0.26 a worker. Five of eleven FinKit workers started cold, about $1.30
+on a $46.52 run - under 3%. Worth understanding, because it explains cost
+variance between runs that otherwise look identical. Not worth engineering
+around, and certainly not worth flattening the tier defaults for: a review is set
+to `high` because the judgement is the point.
+
+One consequence does deserve recording, because it was not known when the
+decision was taken: **worktree isolation puts every build step in a different
+working directory, and the working directory is part of the cache key.** The
+warm starts above show the effect is only partial, so some cached segment
+survives the move - but isolation was made the default on correctness grounds,
+and it carries a cache cost nobody priced. It is still the right default.
 
 ## A note on the arithmetic
 
