@@ -127,11 +127,12 @@ the 2x risk is structural, not per-call. Three things follow from it, none built
    with context and Read with an offset rather than pulling whole files. Free,
    and the largest single contributor to the 56% of spend that is context
    re-reads.
-2. **Trim the worker's tool list.** `worker_argv` already has `--disallowedTools`.
-   A worker is currently handed `Artifact`, `CronCreate`, `PushNotification`,
-   `RemoteTrigger`, `SendMessage` and `Workflow`, none of which an unattended
-   worker should be able to reach. Safety first; the ~4% token saving is
-   secondary.
+2. ~~**Trim the worker's tool list.**~~ DONE. `UNATTENDED_DENY` in `overnight.py`
+   denies `Artifact`, `CronCreate`, `CronDelete`, `CronList`, `DesignSync`,
+   `PushNotification`, `RemoteTrigger`, `SendMessage` and `Workflow` to every
+   worker kind, merged into the single `--disallowedTools` the review step was
+   already using. Safety first - none of them is reachable by the git undo; the
+   ~4% token saving is a bonus.
 3. **Report the structural overhead per run.** Review, reflect, rework and
    discarded attempts were 26% of the FinKit run. `SUMMARY.md` already totals
    cost and could split it, which turns the efficiency bar into something the

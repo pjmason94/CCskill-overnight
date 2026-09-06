@@ -732,14 +732,26 @@ changing.
 
 ## 12. What a worker is given
 
-    claude -p --model <m> --effort <e> --output-format stream-json --verbose --permission-mode <mode> [--disallowedTools ...] [--max-budget-usd <n>] [--json-schema <schema>]
+    claude -p --model <m> --effort <e> --output-format stream-json --verbose --permission-mode <mode> --disallowedTools <...> [--max-budget-usd <n>] [--json-schema <schema>]
 
 | kind | permission mode | tools | schema |
 |---|---|---|---|
-| build | `bypassPermissions` | all | none |
-| review | `bypassPermissions` | Edit, Write, NotebookEdit disallowed | the verdict |
-| reflect | `bypassPermissions` | all | the plan-change record |
-| diagnostic | `bypassPermissions` | all | none |
+| build | `bypassPermissions` | the outward-facing tools disallowed | none |
+| review | `bypassPermissions` | those, and Edit, Write, NotebookEdit | the verdict |
+| reflect | `bypassPermissions` | the outward-facing tools disallowed | the plan-change record |
+| diagnostic | `bypassPermissions` | the outward-facing tools disallowed | none |
+
+**No worker of any kind can reach a tool that acts outside the tree**
+(`UNATTENDED_DENY` in `overnight.py`): `Artifact`, `CronCreate`, `CronDelete`,
+`CronList`, `DesignSync`, `PushNotification`, `RemoteTrigger`, `SendMessage`,
+`Workflow`. Each of them publishes a page, schedules or fires work that outlives
+the run, messages somebody, or fans out further agents - and the git undo that
+sits under everything else in this runner does not reach any of it. Nobody is
+awake to see it happen and a reset cannot take it back, which is the whole
+argument; that their definitions also leave the prefix every API call re-reads,
+worth about 4% of a run's tokens, is a bonus and not the reason. A name the
+installed CLI does not have is simply inert, so the list can safely name a tool
+only some versions ship.
 
 Reflect and diagnostic get the same permission mode as build, not the narrower
 `acceptEdits` an earlier version gave them: `acceptEdits` accepts an edit but

@@ -328,6 +328,28 @@ def main():
             argv_line = path.read_text(encoding="utf-8").splitlines()[0] if path.exists() else ""
             check(f"a {kind} worker is spawned with bypassPermissions",
                   "--permission-mode bypassPermissions" in argv_line, argv_line[:200])
+        # No worker kind may reach a tool that acts outside the tree - publishing,
+        # scheduling, messaging, fanning out - because the git undo does not reach
+        # there and nobody is awake to see it. Every kind, not just the read-only
+        # review, and the flag appears ONCE: passed twice, which of the two the CLI
+        # keeps would be the runner's business and it is not.
+        for kind, path in (("build", out / "s1" / "attempt-1.log"),
+                           ("review", out / "review-s1" / "review.log"),
+                           ("reflect", out / "reflect-1" / "reflect.log"),
+                           ("diagnostic", out / "s2" / "diagnostic.log")):
+            argv_line = path.read_text(encoding="utf-8").splitlines()[0] if path.exists() else ""
+            missing = [t for t in ("Artifact", "CronCreate", "SendMessage", "Workflow")
+                       if t not in argv_line]
+            check(f"a {kind} worker cannot reach the outward-facing tools",
+                  not missing and "--disallowedTools" in argv_line,
+                  f"missing {missing} in {argv_line[:250]}")
+            check(f"the {kind} worker gets one --disallowedTools",
+                  argv_line.count("--disallowedTools") == 1, argv_line[:250])
+        # ...and the review keeps its read-only fence on top of that list.
+        review_argv = (out / "review-s1" / "review.log").read_text(encoding="utf-8").splitlines()[0]
+        check("a review worker is still denied Edit, Write and NotebookEdit",
+              all(t in review_argv for t in ("Edit", "Write", "NotebookEdit")),
+              review_argv[:250])
         # Every worker kind is told to prefer Read/Grep/Glob over Bash for
         # exploration - a `cat`/`sed` read costs far more input tokens than the
         # equivalent structured call. One log per kind is enough to prove it is

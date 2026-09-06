@@ -94,6 +94,19 @@ STRIP_ENV = ("ANTHROPIC_API_KEY", "CLAUDE_EFFORT", "CLAUDE_CODE_SUBAGENT_MODEL")
 DEFAULT_OUT = "overnight/runs"
 DEFAULT_DECISIONS = "overnight/DECISIONS-PENDING.md"
 
+# Tools an unattended worker must not be able to reach, disallowed for every
+# kind. Each of them acts OUTSIDE the run's tree, where the git undo does not
+# reach: it publishes a page, schedules or triggers work that outlives the run,
+# messages somebody, or fans out further agents. Nobody is awake to see any of
+# it happen, and a reset cannot take it back. Blocking them also drops their
+# definitions from the prefix every call re-reads, but that is worth about 4% of
+# a run - the safety argument is the reason, the tokens are a bonus. A name the
+# installed CLI does not have is inert, so the list can name a tool that only
+# some versions ship.
+UNATTENDED_DENY = ("Artifact", "CronCreate", "CronDelete", "CronList",
+                   "DesignSync", "PushNotification", "RemoteTrigger",
+                   "SendMessage", "Workflow")
+
 NO_GIT_SHA = "(no-git)"                  # stands in for a commit id in a degraded run
 NO_GIT_NOTICE = (
     "RUNNING WITHOUT A GIT UNDO: {reason}. A failed gate CANNOT reset the tree, so a"
@@ -1147,11 +1160,15 @@ class Runner:
     def worker_argv(self, kind, tier, schema=None, disallow=()):
         argv = [self.claude, "-p", "--model", tier["model"], "--effort", tier["effort"],
                 "--output-format", "stream-json", "--verbose"]
+        # One merged --disallowedTools: the flag takes a list, and passing it
+        # twice would leave the runner depending on which of the two the CLI
+        # keeps.
+        denied = list(UNATTENDED_DENY)
         if kind == "build":
             argv += ["--permission-mode", "bypassPermissions"]
         elif kind == "review":
-            argv += ["--permission-mode", "bypassPermissions",
-                     "--disallowedTools", "Edit", "Write", "NotebookEdit"]
+            argv += ["--permission-mode", "bypassPermissions"]
+            denied += ["Edit", "Write", "NotebookEdit"]
         elif kind in ("reflect", "diagnostic"):
             # `acceptEdits` auto-accepts an edit and nothing else, so a shell
             # command waits for an approval that nobody is awake to give and is
@@ -1162,8 +1179,8 @@ class Runner:
             # not the permission mode: a reflect's changes outside the plan and the
             # brief directories are reverted, and safe_reset sits under both.
             argv += ["--permission-mode", "bypassPermissions"]
-        if disallow:
-            argv += ["--disallowedTools", *disallow]
+        denied += [name for name in disallow if name not in denied]
+        argv += ["--disallowedTools", *denied]
         budget = self.run_cfg.get("budget_usd_per_step")
         if budget:
             argv += ["--max-budget-usd", str(budget)]
