@@ -98,11 +98,16 @@ configurable, with `promptCacheTtl` in `settings.json` or
 `CLAUDE_CODE_PROMPT_CACHE_TTL` (Claude Code 2.1.242 or later), plus the blunt
 `FORCE_PROMPT_CACHING_5M=1`.
 
-**It would be a mistake.** The 1-hour TTL is the only reason a worker ever starts
-warm: the gaps between steps in these runs are 17 to 65 minutes, every one of
-which a 5-minute cache would miss. It also has to survive a worker's own slow
-gates mid-step. The gross saving is real and the net is much smaller, and the
-risk is all downside.
+TTL is time-to-live: how long a written cache entry stays reusable before it is
+discarded and the next call has to pay to write it again.
+
+**Changing it would be a mistake, and it is not available here anyway.** The
+1-hour TTL is the only reason a worker ever starts warm: the gaps between steps
+in these runs are 17 to 65 minutes, every one of which a 5-minute cache would
+miss. It also has to survive a worker's own slow gates mid-step. The gross saving
+is real, the net is much smaller, and the risk is all downside. Separately, the
+machine these runs were measured on is Claude Code **2.1.229**, below the 2.1.242
+those settings need, so the knob does not exist here until an upgrade.
 
 Two things the operator should know instead, because neither is under the
 runner's control and both change the bill:
@@ -196,7 +201,58 @@ warm starts above show the effect is only partial, so some cached segment
 survives the move - but isolation was made the default on correctness grounds,
 and it carries a cache cost nobody priced. It is still the right default.
 
-## A note on the arithmetic
+## Effort, and step length
+
+Two levers that look promising and are not, plus the one inside them that is.
+
+**Lower effort saves less than it appears, because output is only 19% of the
+bill.** The two `high` workers spend about half their output on thinking - the
+reflect 51%, the review 51% - against 18 to 30% for the six `medium` builds, and
+they are the two most expensive calls in the sample at $0.14 and $0.12 against
+$0.06 to $0.09. But review and reflect together were only 12% of the run, and
+halving their thinking would save well under 1% of it. The kinds also differ, so
+effort is not cleanly separated from the work being harder.
+
+The indirect effect is the one that could matter and is unmeasured here: lower
+effort also means fewer and more consolidated tool calls, and calls are 81% of
+the bill. That is worth a controlled test - one step, run at `medium` and at
+`low`, compared with `tools/tally.py` - and not worth assuming.
+
+**Where to actually spend this:** per-step `effort` is already supported by the
+runner, so no code change is needed. A mechanical build step does not need
+`medium`; one schema-authoring step in the sample spent 68% of its output on
+thinking to write a file that was largely specified for it. Setting `effort: low`
+on obviously mechanical steps at plan time is free and available today. Do not do
+it to review steps: review is where the run's value showed up, and `high` is
+there because the judgement is the point.
+
+**Longer steps are worse, not better.** The intuition is that a longer step
+amortises the fixed prefix over more work. The data says the prefix is the small
+term and context growth is the big one: mean context per call rises with step
+length, from 50k over 11 calls to 165k over 151. Cost rises faster than the work
+does - a 53-call step cost $3.61 and a 100-call step $8.82, so merging two of the
+former into one of the latter would cost about 20% more and save one prefix worth
+$0.30. The 151-call step carried the highest mean context in the sample.
+
+The counter-pressure is real but is not a token cost: every extra step means
+another gate run in wall clock, and a fresh worker re-orients by re-reading files
+its predecessor had already read. So there is an optimum rather than a direction,
+and the sample sits near it. **The evidence does not support lengthening steps,
+and the timeout is a separate question - a timeout that is never hit costs
+nothing, so raising it for safety is free.**
+
+## A note on the arithmetic, and on what the dollars mean
+
+**These runs do not bill an API account.** The runner strips `ANTHROPIC_API_KEY`
+from every worker's environment so the child authenticates as the subscription,
+and the workers are `claude -p` (`--print`, the headless form - there is no `-u`
+flag). So the dollar figures throughout this document are **not a bill**. They
+are what the same tokens would have cost at list price, used as a common unit so
+that buckets and steps can be ranked against each other. What the subscription
+actually meters, and whether it applies the same 2x multiplier to a 1-hour cache
+write, is not something these logs can show. **The token counts are the
+measurement; the dollars are the ranking device.** That does not affect any
+conclusion here, because every one of them is a comparison.
 
 `tools/tally.py` prices tokens at list rates and reconciles **exactly** with the
 `total_cost_usd` every Opus worker reports - nine of nine. The Sonnet workers
