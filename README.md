@@ -735,6 +735,39 @@ test it exists to explain. What actually fences these two is not the permission
 mode - a reflect's changes outside the plan and brief directories are reverted,
 and a `safe_reset` sits under both.
 
+### The environment a worker gets
+
+Three variables are **removed** from every child process the runner spawns -
+workers, gates and git alike (`STRIP_ENV` in `overnight.py`):
+
+| stripped | why |
+|---|---|
+| `ANTHROPIC_API_KEY` | so a worker authenticates as the logged-in subscription rather than billing an API account |
+| `CLAUDE_EFFORT` | an inherited effort setting silently overrides the `--effort` the runner passes for the step |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | same, for any subagent a worker spawns |
+
+**The API key strip is the one to know about.** Editors and shells commonly
+export `ANTHROPIC_API_KEY` into the environment - VS Code does - and a worker
+that inherits it authenticates as that key and bills the API account, quietly,
+while the operator believes the run is spending a subscription allowance. A night
+of workers is a large enough bill to matter. The runner removes it so the child
+falls through to whatever `claude` itself is logged in as.
+
+This also means the dollar figures in a run's output are **notional** on a
+subscription: they are the CLI's own estimate of what the tokens would have cost
+at API rates, useful for comparing steps and enforcing `budget_usd_per_step`, but
+not an invoice. `docs/token-efficiency.md` measures where they go.
+
+If you genuinely want a run to bill an API account, the runner will not let you
+do it by inheritance - log `claude` in against that account instead.
+
+The runner also **sets** `OVERNIGHT_STEP_ID`, `OVERNIGHT_STEP_KIND`,
+`OVERNIGHT_REPO` (the tree the worker is to work in, its own worktree when the
+step is isolated), `OVERNIGHT_MAIN_REPO`, `OVERNIGHT_OUT`, `OVERNIGHT_SPEC`, and
+a `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` identifying this run - which is
+what lets a later reset tell its own workers' commits from a third party's and
+refuse to discard somebody else's work.
+
 **The brief goes on stdin**, never argv. Windows caps a command line at 32,767
 characters, so a long brief on argv truncates in production after passing every
 small test; and `--tools` is variadic and swallows a following prompt argument.
@@ -822,11 +855,19 @@ Measured on the first two runs, opus/medium build steps, opus/high reviews:
 | a night of 12 - 24 steps | 4.6 - 8 h | | $40 - $130 |
 
 **The cost figure is the CLI's own estimate**, the API-equivalent price of the
-tokens used. Workers run as `claude -p` with the API key stripped, so on a
-subscription they spend the subscription's allowance and the dollar figure is
-notional - but `budget_usd_per_step` is enforced against that notional figure,
-and will halt a worker that exceeds it. Set it well above what a good step costs
-(45 was right for opus/medium) or leave it unset.
+tokens used. Workers run as `claude -p` with `ANTHROPIC_API_KEY` stripped from
+their environment (section 12), so on a subscription they spend the
+subscription's allowance and the dollar figure is notional - but
+`budget_usd_per_step` is enforced against that notional figure, and will halt a
+worker that exceeds it. Set it well above what a good step costs (45 was right
+for opus/medium) or leave it unset.
+
+**Where the money actually goes** is measured in `docs/token-efficiency.md`, over
+every real worker this project has run: cost is API calls multiplied by the
+context each carries, context re-reads are 56% of it, and a headless worker costs
+the same per call as the same work done interactively. `python tools/tally.py
+overnight/runs/<name>` re-measures any run, and reads an interactive transcript
+too, so the comparison can be repeated rather than trusted.
 
 **`expected_min` is the calibration loop.** Give every step an estimate. The
 summary shows the actual beside it with the ratio, and marks anything past 1.5x.
