@@ -83,6 +83,20 @@ logged in (a subscription login - see the note on billing in section 12); git on
 PATH and a repository to run in (recommended, not required - section 5). Developed
 and used on Windows 11; the POSIX branches exist and are described in section 16.
 
+**Claude Code 2.1.242 or later is strongly recommended**, because that is the
+first version in which the prompt-cache TTL can be set at all
+(`promptCacheTtl` / `CLAUDE_CODE_PROMPT_CACHE_TTL`). That setting is worth about
+6.5% of a run's tokens - two-thirds of everything a worker writes to cache is
+written seconds after the last write, so it never needs an hour's lifetime and
+pays 2x for one. Below 2.1.242 you cannot change it, and cannot correct it when
+the default moves under you (a subscription in overage silently drops to 5
+minutes). See section 14 and `docs/token-efficiency.md`. **The runner spawns
+whatever `claude` is on `PATH`**,
+which is not necessarily the version your editor is running, so check the one
+that matters:
+
+    claude --version
+
 **1. Clone this repository** somewhere permanent. It is the source of truth: the
 skill directory will be a link to it, not a copy.
 

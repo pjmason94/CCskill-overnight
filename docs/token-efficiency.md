@@ -101,14 +101,35 @@ configurable, with `promptCacheTtl` in `settings.json` or
 TTL is time-to-live: how long a written cache entry stays reusable before it is
 discarded and the next call has to pay to write it again.
 
-**Changing it would be a mistake, and it is not available here anyway.** The
-1-hour TTL is the only reason a worker ever starts warm: the gaps between steps
-in these runs are 17 to 65 minutes, every one of which a 5-minute cache would
-miss. It also has to survive a worker's own slow gates mid-step. The gross saving
-is real, the net is much smaller, and the risk is all downside. The knob is
-available - the machine was upgraded from 2.1.229 to **2.1.263** on the evening
-these numbers were taken, so the setting exists now where it did not during the
-runs. That does not change the recommendation: leave it alone.
+**An earlier draft of this document said to leave it at 1 hour. That was wrong,
+and the error is worth recording** because it is the kind that survives review:
+it optimised the visible third of the problem and never looked at the other
+two-thirds. The argument was that only a 1-hour TTL lets a worker start warm off
+a previous worker's cache, across step gaps of 17 to 65 minutes. True, and nearly
+worthless.
+
+Of the 1,550k tokens written to cache across the sample, only **512k (33%) are
+first-call writes**, the part cross-worker warmth affects. The other **1,038k
+(67%) are intra-step incremental writes** - the conversation growing as the worker
+works, written a few thousand tokens at a time, *seconds apart*. A 5-minute TTL
+survives those exactly as well as a 1-hour one and costs 37.5% less to make them.
+
+    all writes at 1.25x instead of 2.0x            -$4.14
+    9 warm starts become cold: 226k rewritten
+      at 1.25x rather than read at 0.1x            +$1.30
+    ----------------------------------------------------
+    net                                            -$2.84  = 6.5% of the run
+
+The warm start it buys is worth about five pence a worker: a cold start under a
+5-minute TTL writes 55k at 1.25x, against 28k at 2x plus a 27k read under the
+1-hour one. **Provisional recommendation: set 5 minutes.**
+
+Provisional, because one assumption underneath it is unmeasured: every gap
+between consecutive API calls *within* a worker must stay under five minutes, or
+that worker rewrites its whole context instead of extending it. The logs carry
+per-event timestamps, so the gap distribution is computable and has not been
+computed. `docs/ttl-red-team.md` states the case and its attack surface for
+independent review; settle that before changing any project's settings.
 
 **Everything measured here was produced by workers running Claude Code 2.1.229.**
 The runner spawns whatever `claude` is on `PATH`, so runs from now on are on
