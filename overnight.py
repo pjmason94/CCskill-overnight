@@ -127,13 +127,25 @@ DEFAULT_TIERS = {
 # Every worker gets this, regardless of kind. `cat`/`sed` reads and greps done
 # through Bash return whole files and cost far more input tokens than the
 # equivalent Read/Grep/Glob call, which is why those exist as separate tools in
-# the first place. Runner-level and not project-specific (rule: nothing project-
-# specific in the runner), because it applies to every project the same way.
+# the first place. The second half is the bigger lever of the two: measured over
+# 14 real workers, re-reading the context was 56% of the bill, and a tool result
+# is paid for once when it arrives and again on EVERY call after it - so a 50 KB
+# file read at turn 3 of a 40-turn step is charged 38 more times. See
+# docs/token-efficiency.md. Runner-level and not project-specific (rule: nothing
+# project-specific in the runner), because it applies to every project the same
+# way.
 TOOL_USAGE_NOTE = (
     "Tool usage: prefer Read, Grep, Glob and an Explore-style subagent (if the"
     " Agent tool is available to you) for reading and searching the codebase over"
     " Bash. Reserve Bash for the test suite, build scripts and git. Do not use"
-    " `cat` or `sed` to read a file - use Read.\n")
+    " `cat` or `sed` to read a file - use Read.\n"
+    "Keep tool results small: everything one returns stays in your context and is"
+    " re-read on every call you make afterwards, which is the single largest cost"
+    " of a step. So: locate first, read second - Grep for the symbol and read"
+    " around the hits rather than reading a file to find them; on a large file"
+    " Read the range you need with offset and limit, not the whole thing; do not"
+    " re-read a file you have already read or just edited; and pipe a noisy"
+    " command through a filter instead of dumping its output.\n")
 
 REVIEW_SCHEMA = {
     "type": "object",
@@ -1702,6 +1714,15 @@ class Runner:
             for f in verdict.get("findings", []))
         self.log(f"[{step['id']}] rework of {of_id} starting")
         outcome = self.run_build(of_step, rework=rework, base_sha=sha)
+        # run_build charges its workers to the step it built - but that step was
+        # recorded long ago and its step_cost popped with it, so the rework's
+        # spend would sit in the dict until the process exited and never reach the
+        # ledger or the run total. It belongs to the review that ordered it: that
+        # is what makes it visible as overhead rather than as part of the build it
+        # is repairing. Moved whether the rework passed or failed - a failed one
+        # cost the same.
+        self.step_cost[step["id"]] = (self.step_cost.get(step["id"], 0.0)
+                                      + self.step_cost.pop(of_id, 0.0))
         if outcome["outcome"] == "PASS":
             self.update_done(of_id, {"sha": outcome["sha"], "reworked": True,
                                      "note": "reworked after review"},
@@ -1833,7 +1854,48 @@ class Runner:
                         f"{actual:.0f} | {est_cell} | {str(e.get('note', ''))[:120]} |")
         rows.append("\nCumulative worker cost over every step this plan has run,"
                     f" not just this session (self-reported): ${self.cost_so_far():.2f}")
+        rows.append("\n" + self.overhead_line())
         return "\n".join(rows)
+
+    def overhead_line(self):
+        """What the run spent on not-building, in one sentence.
+
+        The efficiency bar (project CLAUDE.md) is that an unattended run must not
+        cost far more than the same work done interactively, and the measurement
+        behind it found the risk is STRUCTURAL, not per-call: review, reflect,
+        rework and discarded attempts were 26% of the first real run. That is a
+        number the operator should see every morning, not one a document asserts.
+
+        Two halves, and they are not equally exact. The KIND split is exact: a
+        review or a reflect is a whole step with its own ledger entry, and a
+        rework's cost is moved onto the review that ordered it (run_review). The
+        retried/reworked COUNTS are indicative only - the ledger keeps one cost
+        per step, so a build step's discarded attempts are inside its own figure
+        and cannot be separated from the attempt that worked.
+        """
+        build = overhead = 0.0
+        retried = reworked = 0
+        for step in self.spec["steps"]:
+            entry = step.get("done")
+            if not entry:
+                continue
+            cost = float(entry.get("cost_usd") or 0)
+            if step["kind"] == "build":
+                build += cost
+                retried += 1 if (entry.get("attempts") or 1) > 1 else 0
+                reworked += 1 if entry.get("reworked") else 0
+            else:
+                overhead += cost
+        total = build + overhead
+        if not total:
+            return "No worker cost recorded, so no overhead split."
+        share = overhead / total * 100
+        return (f"Of that, **${overhead:.2f} ({share:.0f}%) was not building**:"
+                f" review and reflect steps, and the rework they ordered. Build"
+                f" steps ${build:.2f}, of which {retried} needed more than one"
+                f" attempt and {reworked} were reworked after a review - that"
+                " spend is inside the build figure, because the ledger keeps one"
+                " cost per step.")
 
     def write_summary(self, reason):
         stopped = dt.datetime.now()

@@ -622,7 +622,9 @@ in `overnight/steps.yaml`, and committed as `overnight: <step id> <outcome>`:
       sha: "f756c08a"            # absent for SKIPPED and for a run without git
       attempts: 1                # build steps
       minutes: 29.6              # wall clock over every attempt
-      cost_usd: 2.39             # this step's workers, self-reported
+      cost_usd: 2.39             # this step's workers, self-reported. A review
+                                 # step's figure includes any rework IT ordered,
+                                 # which is what makes the overhead split honest
       tier: "opus/medium"        # what the runner ASKED for
       note: "committed at f756c08a"
       reworked: true             # on the reviewed step after a rework pass
@@ -678,6 +680,26 @@ clock, an invalid spec); HEAD; the degraded-mode warning if there is one; then a
 table - step, kind, outcome, minutes, estimate with the actual-to-estimate ratio
 (marked **over** past 1.5x), note - and the cumulative worker cost; then what to
 read next.
+
+The cost line is followed by **the split between building and not building**:
+
+    Cumulative worker cost over every step this plan has run, not just this session (self-reported): $18.40
+    Of that, **$4.85 (26%) was not building**: review and reflect steps, and the rework they ordered. Build steps $13.55, of which 2 needed more than one attempt and 1 was reworked after a review - that spend is inside the build figure, because the ledger keeps one cost per step.
+
+The efficiency bar this project holds itself to (see `docs/token-efficiency.md`)
+is not about what a single API call costs - headless workers cost the same per
+call as an interactive session. It is structural: review, reflect, rework and
+discarded attempts were 26% of the first real run. So it is reported every
+morning rather than asserted in a document.
+
+Read the two halves differently. The **kind split is exact** - a review or a
+reflect is a whole step with its own ledger entry, and a rework's cost is moved
+onto the review that ordered it. The **retried and reworked counts are
+indicative**: the ledger keeps one cost per step, so a build step's discarded
+attempts are inside its own figure and cannot be separated from the attempt that
+finally worked. A high overhead share is not automatically bad - a review that
+catches a real bug has earned its money - but a run where half the spend is not
+building is one whose plan is asking the wrong questions.
 
 ### `discarded-commits.md`
 

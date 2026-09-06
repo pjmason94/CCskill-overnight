@@ -361,6 +361,11 @@ def main():
             text = path.read_text(encoding="utf-8") if path.exists() else ""
             check(f"the {kind} brief carries the tool-usage note",
                   "Reserve Bash for" in text, f"missing in {path}")
+            # ...and the half of it that costs the most: a tool result is paid for
+            # on arrival and again on every call after it.
+            check(f"the {kind} brief tells the worker to keep tool results small",
+                  "Keep tool results small" in text and "offset and limit" in text,
+                  f"missing in {path}")
         check("reflect-1 REFLECT CHANGED", outcome("reflect-1") == "REFLECT CHANGED", outcome("reflect-1"))
         check("added step ran and passed", outcome("added-by-reflect-1") == "PASS",
               outcome("added-by-reflect-1"))
@@ -464,8 +469,32 @@ def main():
               all("overnight+selftest@runner.invalid" in line
                   for line in sh(repo, "git", "log", "--format=%s%x1f%ce").stdout.splitlines()
                   if line.startswith("overnight: ")))
-        check("cost totalled from the ledger",
-              "Cumulative worker cost" in (out / "SUMMARY.md").read_text(encoding="utf-8"))
+        summary = (out / "SUMMARY.md").read_text(encoding="utf-8")
+        check("cost totalled from the ledger", "Cumulative worker cost" in summary)
+        # NOTHING A WORKER SPENT MAY GO MISSING. A rework is built by run_build,
+        # which charges it to the step it repairs - a step recorded long before,
+        # whose step_cost was popped with it - so the rework's spend used to sit in
+        # the dict until the process exited and never reached the ledger at all.
+        # The invariant is the guard: the ledger total equals what the logs say the
+        # workers cost, whatever path spawned them.
+        spent = 0.0
+        for path in sorted(out.rglob("*.log")):
+            for line in reversed(path.read_text(encoding="utf-8", errors="replace").splitlines()):
+                if '"total_cost_usd"' in line:
+                    try:
+                        spent += float(json.loads(line).get("total_cost_usd") or 0)
+                    except (ValueError, AttributeError):
+                        pass
+                    break
+        ledgered = sum(float(e.get("cost_usd") or 0) for e in steps.values())
+        check("every worker's spend reaches the ledger, the rework's included",
+              abs(ledgered - spent) < 0.005 and spent > 0,
+              f"ledger ${ledgered:.2f} vs logs ${spent:.2f}")
+        # ...and the morning gets the split, because the efficiency bar is about
+        # structure - review, reflect and rework - not about per-call cost.
+        check("SUMMARY.md splits out what was not building",
+              "was not building" in summary and "reworked after a review" in summary,
+              summary[-400:])
 
         print("3. resume skips passed steps")
         done = run_runner(repo, scenario_path)

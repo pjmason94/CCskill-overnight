@@ -99,6 +99,14 @@ has the numbers and the ranking.
 ## Working conventions
 
 - Commit after each working increment.
+- **`CHANGELOG.md` and `README.md` are updated in the same commit as the change,
+  never afterwards.** This is published software: the only account a user has of
+  what changed and how it now behaves is those two files, and a commit message
+  is not a substitute - nobody reads the log to find out what a flag does. The
+  changelog gets an `Added` / `Changed` / `Fixed` entry under an Unreleased
+  heading (or the release being cut); the README gets whatever section the change
+  makes wrong. If a change genuinely needs neither - a comment, a test-only edit -
+  say so in the commit message rather than leaving it silent.
 - Every change to the runner is covered by the self-test, or says why not. A
   guard for a defect must be shown to FAIL against the code before the fix.
 - Changes that alter a running contract (step ids, gate forms, the state file,

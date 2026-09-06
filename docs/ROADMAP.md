@@ -123,20 +123,25 @@ accumulate first.
 that headless workers cost the same per API call as an interactive session - so
 the 2x risk is structural, not per-call. Three things follow from it, none built:
 
-1. **Bound what a tool result leaves behind.** A brief-level instruction to Grep
-   with context and Read with an offset rather than pulling whole files. Free,
-   and the largest single contributor to the 56% of spend that is context
-   re-reads.
+1. ~~**Bound what a tool result leaves behind.**~~ DONE. `TOOL_USAGE_NOTE` now
+   tells every worker kind that a tool result is paid for on arrival and again on
+   every call after it: locate with Grep before reading, Read a large file with
+   `offset`/`limit`, do not re-read what is already in context, filter a noisy
+   command. Free, and aimed at the largest single contributor to the 56% of spend
+   that is context re-reads. Whether it MOVES that 56% is unmeasured - the next
+   real run on 2.1.263 is the first test of it.
 2. ~~**Trim the worker's tool list.**~~ DONE. `UNATTENDED_DENY` in `overnight.py`
    denies `Artifact`, `CronCreate`, `CronDelete`, `CronList`, `DesignSync`,
    `PushNotification`, `RemoteTrigger`, `SendMessage` and `Workflow` to every
    worker kind, merged into the single `--disallowedTools` the review step was
    already using. Safety first - none of them is reachable by the git undo; the
    ~4% token saving is a bonus.
-3. **Report the structural overhead per run.** Review, reflect, rework and
-   discarded attempts were 26% of the FinKit run. `SUMMARY.md` already totals
-   cost and could split it, which turns the efficiency bar into something the
-   operator sees every morning rather than something a document asserts.
+3. ~~**Report the structural overhead per run.**~~ DONE. `overhead_line()` splits
+   `SUMMARY.md`'s total into building and not-building, with counts of the build
+   steps that were retried or reworked. Doing it surfaced a defect: a rework's
+   cost never reached the ledger at all, so every run to date has under-reported
+   itself by whatever its reworks cost. Fixed, and guarded by the invariant
+   (ledger total == what the logs say the workers spent).
 
 The subagent question is deliberately NOT on this list as a change: a subagent
 pays its own prefix and does the same reading, so it only saves what the reading
