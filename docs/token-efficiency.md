@@ -241,6 +241,46 @@ and the sample sits near it. **The evidence does not support lengthening steps,
 and the timeout is a separate question - a timeout that is never hit costs
 nothing, so raising it for safety is free.**
 
+### So should a long step be split into several short ones?
+
+Sometimes, and the mechanism says exactly when. A worker's context starts at the
+prefix and grows as it reads, so its total spend has two terms: **the prefix,
+paid once per call, and the growth, paid roughly as the square of the call
+count.** Splitting a step attacks only the second term - and adds a third, the
+re-orientation reading each fresh worker does to catch up.
+
+That gives a U, and the sample shows it. Cost per call by step length:
+
+| calls | $/call |
+|---|---|
+| 11 | 0.079 |
+| 22 | 0.060 |
+| 27 | 0.074 |
+| 53 | 0.068 |
+| 69 | 0.080 |
+| 100 | 0.088 |
+
+Both ends are dear. An 11-call step is dear because a 55k prefix is amortised
+over eleven calls; a 100-call step is dear because its context grew all the way
+to 119k. **The floor is around 20 to 55 calls, which is roughly the 7 to 15
+minute step this project already recommends.**
+
+So: split a step that is genuinely long - the 100-call, 30-minute kind, where the
+quadratic term dominates and `expected_min` has already flagged it as carrying
+more than one deliverable. Do not split a 15-minute step into three 5-minute
+ones: that lands on the left arm of the U, pays three prefixes instead of one,
+and adds two rounds of re-orientation reading, on top of three gate runs and
+three worktree cycles.
+
+**And splitting cannot be justified by the cache TTL.** A 5-minute TTL is not a
+prize for finishing quickly - it is cheaper to *write* (1.25x against 2x) and
+expires sooner, and it applies to every write the process makes, not to the step
+as a unit. Within a step the calls are seconds apart, so any TTL survives them
+regardless of how long the step runs. What a short TTL would break is the gap
+*between* workers, which is set by gate runtime and by what else the run
+interleaves - 19 minutes in the sample - and which shortening the steps does not
+shorten.
+
 ## A note on the arithmetic, and on what the dollars mean
 
 **These runs do not bill an API account.** The runner strips `ANTHROPIC_API_KEY`
