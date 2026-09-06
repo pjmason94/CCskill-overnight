@@ -1080,6 +1080,8 @@ repository and prints its path, and the run.log tail is printed on failure.
 | `references/progress.md` | read a run in flight, or a finished one |
 | `references/spec-format.md` | the steps file, gate forms, step kinds, resume |
 | `examples/` | a complete fictional run package; `python examples/try_it.py` runs it end to end for no tokens |
+| `tools/tally.py` | where a session's tokens went, from its log or a whole run directory |
+| `tools/progress.py` | one line per project: is a run live, what is it on, how far, what has it spent |
 | `docs/ROADMAP.md` | what is not built yet, and why each item matters |
 | `docs/releases/` | the notes published with each version tag |
 | `CLAUDE.md` | the rules for working on this repository |

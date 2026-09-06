@@ -3,6 +3,20 @@
 All notable changes to this project are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `tools/progress.py <project dir> ...` prints **one line per project** and
+  nothing else: whether a run is live, the step it is on this minute, how far
+  through the plan it is, and what it has spent. It exists for the question asked
+  at 3am, where a report that needs reading is a report that does not get read.
+  Read-only - it takes the liveness from the run's own `.lock` (so it needs no
+  process table and no arguments beyond the project directory), reads `run.log`
+  and the plan, and writes nothing, so it is safe against a run in flight, which
+  is the only time anybody wants it. A lock whose pid is dead reports as a
+  finished run rather than a live one.
+
 ## [1.0.1] - 2026-09-06
 
 ### Changed

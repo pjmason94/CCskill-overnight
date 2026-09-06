@@ -41,6 +41,7 @@ somebody did, or an older install left one behind: `--force` fixes it.
 | `references/` | the procedures the router loads - one per mode, plus the spec format |
 | `examples/` | a complete fictional run package; `try_it.py` runs it against the fake worker |
 | `tools/tally.py` | where a worker's or an interactive session's tokens went, from its log |
+| `tools/progress.py` | one line per project, for a 3am "how is it going" - read-only |
 | `docs/ROADMAP.md` | what is not built yet, and why each matters |
 | `docs/releases/` | the notes published with each version tag |
 | `LICENSE` | GPL-3.0 |
