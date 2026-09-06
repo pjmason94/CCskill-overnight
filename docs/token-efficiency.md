@@ -122,14 +122,26 @@ survives those exactly as well as a 1-hour one and costs 37.5% less to make them
 
 The warm start it buys is worth about five pence a worker: a cold start under a
 5-minute TTL writes 55k at 1.25x, against 28k at 2x plus a 27k read under the
-1-hour one. **Provisional recommendation: set 5 minutes.**
+1-hour one.
 
-Provisional, because one assumption underneath it is unmeasured: every gap
-between consecutive API calls *within* a worker must stay under five minutes, or
-that worker rewrites its whole context instead of extending it. The logs carry
-per-event timestamps, so the gap distribution is computable and has not been
-computed. `docs/ttl-red-team.md` states the case and its attack surface for
-independent review; settle that before changing any project's settings.
+**But the settled answer is: on a subscription, change nothing.** That saving is
+priced at API list rates, and these workers authenticate as a Claude Max
+subscription instead. If subscription metering does not apply the write
+multiplier - unobservable from these logs - then 5 minutes has no upside at all,
+while still forfeiting 226k tokens of warm prefix reads a run that then have to be
+processed again against a rolling allowance. No upside in one branch and 6.5% in
+the other, taken without knowing which branch you are in, is not a change worth
+making. On an API key it is, and the risk that argues against it was measured to
+zero: across 643 consecutive-call gaps the largest was 137 seconds, against a
+300-second cliff.
+
+| billing | TTL |
+|---|---|
+| Claude subscription | 1 hour, the default - change nothing |
+| API key or credits | 5 minutes |
+
+`docs/ttl-red-team.md` carries the full case, an independent review of it, and the
+one arithmetic error that review made.
 
 **Everything measured here was produced by workers running Claude Code 2.1.229.**
 The runner spawns whatever `claude` is on `PATH`, so runs from now on are on

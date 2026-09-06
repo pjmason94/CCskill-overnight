@@ -153,6 +153,74 @@ Ranked by how much damage they would do if true.
   is a prompting matter, not a caching one. TTL is worth ~6.5%; that is worth
   ~30%+ and is not what this document is about.
 
+## RESOLVED, 2026-09-06, after independent review
+
+An external review (Gemini) returned "keep 1 hour". **The verdict is accepted.
+One of its two supporting arguments is sound and the other is arithmetically
+wrong, and the difference matters if the billing ever changes.**
+
+### Attack 1 is dead: measured, not argued
+
+The review's headline was a break-even: a saving of ~$0.20 a worker against
+~$2.25 for one blown cache, so "if even 1 in 11 workers suffers a >5m intra-step
+pause, the entire saving evaporates".
+
+**The $2.25 is wrong.** It prices Opus input at $15/M; it is $5/M, so a 1.25x
+rewrite of a 120k context is $0.75, not $2.25. The real break-even is
+$0.203/$0.72 = **28% of workers**, not 8.8% - a quarter of a run could blow its
+cache before 5 minutes stopped paying.
+
+And the gap distribution is now computed from the logs' own timestamps, which
+nobody had done. Across **643 consecutive-call gaps in 14 workers**:
+
+| median | p95 | p99 | max | over 300s |
+|---|---|---|---|---|
+| 10s | 48s | 105s | **137s** | **0 (0.00%)** |
+
+The largest gap anywhere in the sample is 137 seconds, less than half the
+5-minute cliff, and no worker came close. The failure mode the review ranked
+first does not occur here at all. Its causes were plausibly named - hung test
+gates, long thinking passes, 429 backoff - and none of them happened across two
+projects and 643 opportunities.
+
+### Attack 3 is the real reason, and it is sound
+
+These workers authenticate as a **Claude Max subscription**, not an API key. The
+1.25x/2.0x multipliers are API list pricing. Whether subscription metering
+applies them - or meters raw tokens, or message counts against a rolling window -
+is not observable from these logs, and the review asserted internal mechanics it
+cannot know either. Treat its specifics as hypothesis.
+
+But the **asymmetry** it identifies holds regardless of mechanism:
+
+- If metering ignores the write multiplier, 5 minutes has **zero upside** and
+  still forfeits 226k tokens of warm prefix reads per run, which then have to be
+  processed again and may count against a rolling usage allowance.
+- If metering does apply it, 5 minutes is worth ~6.5%.
+
+**A change with no upside in one branch and a modest one in the other, taken
+under uncertainty about which branch you are in, is not worth making.**
+
+### The position
+
+| billing | TTL | why |
+|---|---|---|
+| Claude subscription | **1 hour** (the default - change nothing) | multipliers may not be metered; no upside worth the uncertainty |
+| API key or credits | **5 minutes** | ~6.5%, and the intra-step risk is measured at zero |
+
+Revisit if the metering becomes knowable, or if a project's gates get slow enough
+to push inter-call gaps toward 300s - the tally now measures that, so it is a
+check, not a guess.
+
+**One limitation to keep honest.** The TTL could not be set on the version these
+runs used (Claude Code 2.1.229; the setting arrived in 2.1.242), so every write
+in the sample was at the 1-hour default and **no 5-minute run has ever been
+observed.** The gap distribution above is a property of how the workers behave,
+not of the TTL, so it does predict that a 5-minute cache would have survived -
+but it is a prediction, not an observation. The machine is now on 2.1.263, which
+also means a future measurement is on a different build from this one. Any switch
+should be A/B'd on a real run, not taken on this arithmetic alone.
+
 ## The question
 
 Given the above: **5 minutes, 1 hour, or is the honest answer "measure the
