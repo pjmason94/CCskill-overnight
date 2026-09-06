@@ -97,6 +97,48 @@ rather than complementary: once this exists, the right move is one long run that
 sleeps through the wall, not a chain of runs timed around it. That is the point -
 the timing arithmetic done by hand on 2026-09-06 stops being necessary.
 
+## 11. `--until`, not `--hours`: the operator's constraint is a deadline
+
+**The metric is wrong.** `--hours` asks for a duration. What an operator actually
+has is a moment - "I want to see what has been achieved by 07:30". Every launch
+therefore begins with the operator converting their real constraint into the
+runner's, in their head, at the exact moment they are least equipped to do
+arithmetic: last thing at night. On 2026-09-06 that conversion was done four times
+in one evening between two projects and got it wrong once, in the direction that
+would have cost an entire eight-hour run.
+
+**A duration is also unstable under the launch it is designed for.** `--hours 8`
+in a scheduled task means eight hours from whenever the task fires. If the trigger
+is missed, or the first launch refuses on a dirty tree and the operator relaunches
+twenty minutes later, the run overshoots the morning by exactly the delay - and it
+does so silently, because nothing in the run knows what time the operator meant.
+A deadline is invariant to when the launch actually happened, which is precisely
+the property an unattended, scheduled thing needs.
+
+**It resolves item 10's open question rather than inheriting it.** Under
+`--hours`, whether parked time should extend the run is a genuine dilemma with no
+clean answer. Under `--until` there is nothing to decide: the promise is a moment,
+so a park eats into the work and the deadline does not move. That is not a
+compromise, it is the operator's actual intent - they asked to see results by a
+time, not to be given a fixed quantity of compute whenever it could be spent.
+
+**It lets the runner stop honestly, which `--hours` cannot.** Today the clock
+stops the runner STARTING steps; a step already running carries on, so the real
+end is the deadline plus however long the last step takes - up to half an hour
+past, on the step lengths seen so far. An operator reading "results by 07:30"
+means results, not a step still running at 07:52. With a deadline and the
+`expected_min` each step already carries (item 3), the runner can decline to start
+a step it cannot finish in time, and say so: `not starting b5-2 (est 18 min,
+14 min left)`. That is a better answer than starting it and being reset by the
+clock, and it is the first thing that would make `expected_min` earn its place.
+
+**Shape.** `--until 07:30`, resolved to the next occurrence of that time and
+logged ONCE as an absolute datetime at the top of the run, so the log is never
+ambiguous about which 07:30 was meant. `run.until` in the spec beside `run.hours`.
+Keep `--hours` working as a synonym computed against the start - it is a running
+contract, deprecated rather than removed, and the change is noted in `README.md`
+and the changelog when it lands.
+
 ## 1. The expected-value triage on a raised judgement
 
 **The idea.** Today a step that needs judgement stops and leaves the decision for
