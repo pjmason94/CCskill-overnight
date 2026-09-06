@@ -55,6 +55,48 @@ fixture where the fake worker fails N times in a row with no commit. The fixture
 is the reason it was not built on the night it was diagnosed - putting untested
 runner code under an unattended run is the trade the hard rules exist to refuse.
 
+## 10. Park and resume, rather than stop, when the usage window is the problem
+
+**Builds on item 9, and finishes it.** Item 9 is the detection: notice that
+nothing can succeed and stop marching through the plan. Stopping is the safe
+answer, not the right one - the operator still wakes to a run that did a fifth of
+its work and sat idle for six hours. The same signal deserves a better response:
+PARK, poll, and carry on when the quota comes back.
+
+**The behaviour.** On tripping the breaker the run does not end. It logs that it
+is parked, waits ~30 minutes, and probes. When the probe succeeds it resumes at
+the step it was on - the plan is the ledger, so "resume" is what this runner
+already does on every launch, and nothing new has to be remembered.
+
+**The probe must be cheap.** Retrying the real step is the obvious test and the
+wrong one: a build brief is thousands of characters, it writes a fresh cache
+prefix, and a failed probe every half hour all night is a bill for nothing. The
+probe should be the smallest possible worker - a trivial prompt, no tools, a
+one-word answer - so that testing "is the account alive" costs a rounding error.
+
+**The heartbeat must keep beating.** A parked run and a hung run look identical
+from outside, and this project has already learned that lesson once. While parked
+it must log on a cadence - parked since HH:MM, next probe at HH:MM, N probes so
+far - so that `/overnight progress` and a `tail -f` both show something moving.
+
+**The open question is the clock, and it is a real one.** `--hours` exists so the
+run is not still going when the operator wakes up; it is a wall-clock promise, not
+a compute budget. So parked time should almost certainly NOT extend `stop_at` -
+but then a three-hour park silently eats most of a seven-hour run, which is
+exactly the outcome the operator was trying to avoid by scheduling around the
+window in the first place. Neither answer is obviously right. A cap on total
+parked time, after which the run ends normally with `SUMMARY.md` written, is
+probably the honest middle - and whichever is chosen, the summary must say how
+much of the night went to waiting rather than working, or the efficiency figures
+lie about what the run cost per hour.
+
+**One consequence worth stating.** A parked run still holds its `.lock`, which is
+correct - it has not finished - but it means a scheduled relaunch fired at it
+while parked will refuse. Parking makes the scheduled-launch pattern redundant
+rather than complementary: once this exists, the right move is one long run that
+sleeps through the wall, not a chain of runs timed around it. That is the point -
+the timing arithmetic done by hand on 2026-09-06 stops being necessary.
+
 ## 1. The expected-value triage on a raised judgement
 
 **The idea.** Today a step that needs judgement stops and leaves the decision for
