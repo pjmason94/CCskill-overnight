@@ -42,6 +42,7 @@ somebody did, or an older install left one behind: `--force` fixes it.
 | `examples/` | a complete fictional run package; `try_it.py` runs it against the fake worker |
 | `tools/tally.py` | where a worker's or an interactive session's tokens went, from its log |
 | `docs/ROADMAP.md` | what is not built yet, and why each matters |
+| `docs/releases/` | the notes published with each version tag |
 | `LICENSE` | GPL-3.0 |
 
 ## The two stages
@@ -111,6 +112,21 @@ has the numbers and the ranking.
   guard for a defect must be shown to FAIL against the code before the fix.
 - Changes that alter a running contract (step ids, gate forms, the state file,
   the `overnight/` layout) are noted in `README.md` as well as the code.
+- **Every version gets release notes at `docs/releases/v<x.y.z>.md`, written
+  before the tag and published as the GitHub release body.** They are not the
+  changelog again: the changelog is the record of what changed, the notes are the
+  argument for why a user should care and what upgrading asks of them. Each set
+  covers, in this order - the headline change and the reasoning behind it; any
+  behaviour that is now different for an existing plan; anything a user may have
+  quoted that was wrong before (a bad number is worse than a bug, because nobody
+  goes looking for it); and the upgrade steps. Cut a release only from a checkout
+  whose `selftest.py` passes, and only after the changelog section carries a real
+  date rather than "Unreleased".
+- **A version is locked once its notes are written and its tag pushed.** Before
+  that, later work folds into the open section rather than opening a new one -
+  v1.0.1 absorbed a whole second session's work this way, because no tag had ever
+  been cut. After it, the next change starts a new version, and the released
+  section is never edited again.
 - After changing `SKILL.md` or anything in `references/`, remember the harness
   reads the skill list at session start: a new session may be needed to see it.
 

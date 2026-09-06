@@ -1081,6 +1081,7 @@ repository and prints its path, and the run.log tail is printed on failure.
 | `references/spec-format.md` | the steps file, gate forms, step kinds, resume |
 | `examples/` | a complete fictional run package; `python examples/try_it.py` runs it end to end for no tokens |
 | `docs/ROADMAP.md` | what is not built yet, and why each item matters |
+| `docs/releases/` | the notes published with each version tag |
 | `CLAUDE.md` | the rules for working on this repository |
 | `CHANGELOG.md` | what changed, release by release |
 | `LICENSE` | GNU General Public License v3.0 |
