@@ -1,0 +1,5 @@
+# LF everywhere, in the repository and in the working tree - including on
+# Windows, where this project is developed. Without it git offers to convert
+# every file to CRLF on checkout and warns on every single commit, and the noise
+# trains you to ignore the one warning that matters.
+* text=auto eol=lf

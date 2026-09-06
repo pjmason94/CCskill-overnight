@@ -1,0 +1,88 @@
+# EXAMPLE - a complete overnight plan for a project that does not exist.
+#
+# "tickerbell" is invented: a small library that turns a number of seconds into
+# words ("3d 4h", "in about two minutes"). Nothing here refers to a real file,
+# a real repository or a real person. It is here to show the SHAPE of a plan -
+# the step sizes, the gate style, where reviews and reflects go - and to give a
+# new project something that runs end to end before it writes a real brief.
+#
+# To watch it run, for no tokens:
+#
+#     python examples/try_it.py
+#
+# In a real project this file lives at <project>/overnight/steps.yaml and the
+# briefs at <project>/overnight/briefs/, and it is committed.
+
+run:
+  name: example
+  hours: 2
+  attempts: 3
+  worker_timeout_min: 30
+  preamble: overnight/briefs/_preamble.md
+  decisions_file: overnight/DECISIONS-PENDING.md
+
+  defaults:
+    build:      {model: sonnet, effort: medium}
+    review:     {model: opus,   effort: high}
+    reflect:    {model: opus,   effort: high}
+    diagnostic: {model: opus,   effort: high}
+
+  # Universal gates, appended to every build step's own. The suite catches a step
+  # that broke something outside itself; clean_tree catches a step that did the
+  # work but did not commit it.
+  gates:
+    - {name: full suite, cmd: python -m pytest -q}
+    - {clean_tree: true}
+
+steps:
+
+  # One deliverable. The contract is a named test node id, and the same id
+  # appears in the brief - the worker writes the test, the gate runs it.
+  - id: parse-durations
+    kind: build
+    title: parse a duration string into seconds, rejecting nonsense
+    brief: overnight/briefs/parse-durations.md
+    expected_min: 15
+    timeout_min: 40
+    gates:
+      - {cmd: python -m pytest -q tests/test_parse_durations.py}
+
+  # A review after a step that sets a shape the rest of the run builds on.
+  # `rework` buys one more attempt on top of the reviewed commit; the reviewed
+  # commit stands if that attempt fails its gates.
+  - id: review:parse-durations
+    kind: review
+    of: parse-durations
+    on_fail: rework
+
+  # A second deliverable, deliberately independent of the first, so that a STUCK
+  # step skips rather than blocking what follows.
+  - id: humanise
+    kind: build
+    title: render a number of seconds as a short human phrase
+    brief: overnight/briefs/humanise.md
+    expected_min: 15
+    timeout_min: 40
+    gates:
+      - {cmd: python -m pytest -q tests/test_humanise.py}
+
+  # A reflect after a block of steps: it may rewrite the PENDING plan and nothing
+  # else. The runner validates the rewrite and reverts one that touches a
+  # completed step.
+  - id: reflect-1
+    kind: reflect
+    brief: overnight/briefs/_reflect.md
+
+  - id: cli
+    kind: build
+    title: a one-command CLI over the two functions above
+    brief: overnight/briefs/cli.md
+    expected_min: 15
+    timeout_min: 40
+    gates:
+      - {cmd: python -m pytest -q tests/test_cli.py}
+
+  - id: review:cli
+    kind: review
+    of: cli
+    on_fail: record
