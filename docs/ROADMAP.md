@@ -117,6 +117,31 @@ previous runs' actuals when planning, and warn at plan time when a step's estima
 is out of line with what steps of that shape have actually taken. Needs runs to
 accumulate first.
 
+## 8. Hold the run to the efficiency bar
+
+`docs/token-efficiency.md` measured where an overnight run's tokens go, and found
+that headless workers cost the same per API call as an interactive session - so
+the 2x risk is structural, not per-call. Three things follow from it, none built:
+
+1. **Bound what a tool result leaves behind.** A brief-level instruction to Grep
+   with context and Read with an offset rather than pulling whole files. Free,
+   and the largest single contributor to the 56% of spend that is context
+   re-reads.
+2. **Trim the worker's tool list.** `worker_argv` already has `--disallowedTools`.
+   A worker is currently handed `Artifact`, `CronCreate`, `PushNotification`,
+   `RemoteTrigger`, `SendMessage` and `Workflow`, none of which an unattended
+   worker should be able to reach. Safety first; the ~4% token saving is
+   secondary.
+3. **Report the structural overhead per run.** Review, reflect, rework and
+   discarded attempts were 26% of the FinKit run. `SUMMARY.md` already totals
+   cost and could split it, which turns the efficiency bar into something the
+   operator sees every morning rather than something a document asserts.
+
+The subagent question is deliberately NOT on this list as a change: a subagent
+pays its own prefix and does the same reading, so it only saves what the reading
+would have left behind, and a parallel fan-out costs more than it saves. It needs
+a measured experiment on one real step first.
+
 ## 7. A plan seed: `/overnight plan <file>`
 
 **The idea.** The planner reads documents the user names - a roadmap, an issue

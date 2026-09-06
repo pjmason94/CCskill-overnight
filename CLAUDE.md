@@ -40,6 +40,7 @@ somebody did, or an older install left one behind: `--force` fixes it.
 | `SKILL.md` | the skill definition Claude Code reads: a short router over four modes |
 | `references/` | the procedures the router loads - one per mode, plus the spec format |
 | `examples/` | a complete fictional run package; `try_it.py` runs it against the fake worker |
+| `tools/tally.py` | where a worker's or an interactive session's tokens went, from its log |
 | `docs/ROADMAP.md` | what is not built yet, and why each matters |
 | `LICENSE` | GPL-3.0 |
 
@@ -76,6 +77,24 @@ Plus **PROGRESS** (`references/progress.md`) over a run's own files, and HELP.
 7. **Every source file carries the GPL notice.** New `.py` files get the same
    fourteen-line header as the others, above the module docstring - not inside
    it, because several modules pass `__doc__` to argparse.
+
+## The efficiency objective
+
+An unattended run must not be significantly more token-hungry than doing the
+same work in an interactive session. Some overhead for running unsupervised is
+fine - a brief, a gate, a review - but spending 2x the tokens is not, and any
+change to the runner or the briefs is judged against that bar, not against
+whether it is tidy.
+
+Measure, do not assume. `python tools/tally.py <run dir or transcript>` splits
+a session's spend into its buckets (context re-read per call, cache writes,
+output) and lists the tool results that filled the context. Measured on the
+first two real runs (2026-09-06): cost is turns x context, and context re-reads
+alone are over half of every worker's bill, so the levers that matter are the
+number of API calls a worker makes and how much each tool result leaves behind
+in its context. Brief size, note wording and pre-computed snippets are each
+under 2% and are not worth a change on their own. `docs/token-efficiency.md`
+has the numbers and the ranking.
 
 ## Working conventions
 
