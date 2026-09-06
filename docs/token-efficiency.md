@@ -105,9 +105,15 @@ discarded and the next call has to pay to write it again.
 1-hour TTL is the only reason a worker ever starts warm: the gaps between steps
 in these runs are 17 to 65 minutes, every one of which a 5-minute cache would
 miss. It also has to survive a worker's own slow gates mid-step. The gross saving
-is real, the net is much smaller, and the risk is all downside. Separately, the
-machine these runs were measured on is Claude Code **2.1.229**, below the 2.1.242
-those settings need, so the knob does not exist here until an upgrade.
+is real, the net is much smaller, and the risk is all downside. The knob is
+available - the machine was upgraded from 2.1.229 to **2.1.263** on the evening
+these numbers were taken, so the setting exists now where it did not during the
+runs. That does not change the recommendation: leave it alone.
+
+**Everything measured here was produced by workers running Claude Code 2.1.229.**
+The runner spawns whatever `claude` is on `PATH`, so runs from now on are on
+2.1.263 and a later tally is not strictly comparable to these figures. Re-measure
+before drawing a trend across the boundary.
 
 Two things the operator should know instead, because neither is under the
 runner's control and both change the bill:
