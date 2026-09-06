@@ -28,7 +28,8 @@ it running.
 16. [Limitations](#16-limitations)
 17. [Troubleshooting](#17-troubleshooting)
 18. [Files in this repository](#18-files-in-this-repository)
-19. [Licence](#19-licence)
+19. [Changelog](#19-changelog)
+20. [Licence](#20-licence)
 
 ## 1. What it is for
 
@@ -723,12 +724,29 @@ changing.
 |---|---|---|---|
 | build | `bypassPermissions` | all | none |
 | review | `bypassPermissions` | Edit, Write, NotebookEdit disallowed | the verdict |
-| reflect | `acceptEdits` | all | the plan-change record |
-| diagnostic | `acceptEdits` | all | none |
+| reflect | `bypassPermissions` | all | the plan-change record |
+| diagnostic | `bypassPermissions` | all | none |
+
+Reflect and diagnostic get the same permission mode as build, not the narrower
+`acceptEdits` an earlier version gave them: `acceptEdits` accepts an edit but
+refuses every shell command, which meant a reflect worker could rewrite the plan
+and commit it but not copy a file, and a diagnostic could not run the failing
+test it exists to explain. What actually fences these two is not the permission
+mode - a reflect's changes outside the plan and brief directories are reverted,
+and a `safe_reset` sits under both.
 
 **The brief goes on stdin**, never argv. Windows caps a command line at 32,767
 characters, so a long brief on argv truncates in production after passing every
 small test; and `--tools` is variadic and swallows a following prompt argument.
+
+**Every brief carries a tool-usage note**, regardless of kind: prefer Read, Grep,
+Glob and an Explore-style subagent over Bash for reading and searching the
+codebase, and reserve Bash for the test suite, build scripts and git. This is a
+nudge, not a restriction - Bash stays fully available, because a build worker
+must be able to run its gates and commit its own work, and a diagnostic must be
+able to re-run the failing test it is asked to explain. A `cat`/`sed` read costs
+far more input tokens than the equivalent structured call, which is the entire
+reason to nudge it rather than the reason to ban it.
 
 **Environment.** The worker inherits the runner's environment with these
 changes:
@@ -975,9 +993,15 @@ repository and prints its path, and the run.log tail is printed on failure.
 | `examples/` | a complete fictional run package; `python examples/try_it.py` runs it end to end for no tokens |
 | `docs/ROADMAP.md` | what is not built yet, and why each item matters |
 | `CLAUDE.md` | the rules for working on this repository |
+| `CHANGELOG.md` | what changed, release by release |
 | `LICENSE` | GNU General Public License v3.0 |
 
-## 19. Licence
+## 19. Changelog
+
+Recorded in `CHANGELOG.md`. The published release notes on GitHub summarise the
+same changes for a reader who wants the highlights rather than the full list.
+
+## 20. Licence
 
 GNU General Public License, version 3 or later. The full text is in `LICENSE`.
 

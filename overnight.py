@@ -111,6 +111,17 @@ DEFAULT_TIERS = {
     "diagnostic": {"model": "opus", "effort": "high"},     # OH
 }
 
+# Every worker gets this, regardless of kind. `cat`/`sed` reads and greps done
+# through Bash return whole files and cost far more input tokens than the
+# equivalent Read/Grep/Glob call, which is why those exist as separate tools in
+# the first place. Runner-level and not project-specific (rule: nothing project-
+# specific in the runner), because it applies to every project the same way.
+TOOL_USAGE_NOTE = (
+    "Tool usage: prefer Read, Grep, Glob and an Explore-style subagent (if the"
+    " Agent tool is available to you) for reading and searching the codebase over"
+    " Bash. Reserve Bash for the test suite, build scripts and git. Do not use"
+    " `cat` or `sed` to read a file - use Read.\n")
+
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1320,6 +1331,7 @@ class Runner:
         parts = [self.preamble().replace("{CHUNK}", step["id"]),
                  f"\n# Your step: `{step['id']}`"
                  + (f" - {step['title']}" if step.get("title") else "") + "\n\n",
+                 TOOL_USAGE_NOTE,
                  read_text(self.repo / step["brief"]),
                  "\n# The gates your work must pass\n\nThese run after you finish,"
                  " from the repository root. Run them yourself before you commit."
@@ -1347,6 +1359,7 @@ class Runner:
             "You are the REVIEW step in an unattended overnight run. Nobody is awake.\n"
             "You are READ-ONLY: Edit and Write are disallowed, and the runner resets the\n"
             "tree after you. Do not commit anything.\n\n"
+            + TOOL_USAGE_NOTE + "\n"
             f"Review commit `{sha}` - `git show {sha}` - which delivered step\n"
             f"`{of_step['id']}`. Its gates passed; a gate is a floor, not a standard.\n"
             "Read the brief it was given (below), then the commit, then whatever in the\n"
@@ -1388,6 +1401,7 @@ class Runner:
         rel_spec = self.spec_path.relative_to(self.repo).as_posix()
         return (
             "You are the REFLECT step in an unattended overnight run. Nobody is awake.\n\n"
+            + TOOL_USAGE_NOTE + "\n"
             "Your job: read how the night has gone and decide whether the REMAINING\n"
             f"steps of the plan should change. The plan is `{rel_spec}`; its format is\n"
             "explained below. You may edit it - and add brief files beside the existing\n"
@@ -1428,6 +1442,7 @@ class Runner:
         return (
             "You are the DIAGNOSTIC pass in an unattended overnight run. Two attempts at\n"
             "one step failed and were reset, so the repository is as both started.\n\n"
+            + TOOL_USAGE_NOTE + "\n"
             f"Write ONE file and nothing else: `{(step_dir / 'remediation.md').relative_to(self.repo).as_posix()}`\n\n"
             "It must say, with evidence from the transcripts: (1) what went wrong on each\n"
             "attempt, naming the gate and quoting the output; (2) whether they share a\n"

@@ -328,6 +328,17 @@ def main():
             argv_line = path.read_text(encoding="utf-8").splitlines()[0] if path.exists() else ""
             check(f"a {kind} worker is spawned with bypassPermissions",
                   "--permission-mode bypassPermissions" in argv_line, argv_line[:200])
+        # Every worker kind is told to prefer Read/Grep/Glob over Bash for
+        # exploration - a `cat`/`sed` read costs far more input tokens than the
+        # equivalent structured call. One log per kind is enough to prove it is
+        # not just the build brief that carries it.
+        for kind, path in (("build", out / "s1" / "attempt-1.log"),
+                           ("review", out / "review-s1" / "review.log"),
+                           ("reflect", out / "reflect-1" / "reflect.log"),
+                           ("diagnostic", out / "s2" / "diagnostic.log")):
+            text = path.read_text(encoding="utf-8") if path.exists() else ""
+            check(f"the {kind} brief carries the tool-usage note",
+                  "Reserve Bash for" in text, f"missing in {path}")
         check("reflect-1 REFLECT CHANGED", outcome("reflect-1") == "REFLECT CHANGED", outcome("reflect-1"))
         check("added step ran and passed", outcome("added-by-reflect-1") == "PASS",
               outcome("added-by-reflect-1"))
