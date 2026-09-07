@@ -62,6 +62,47 @@ Cheap: one comparison in the existing heartbeat loop, the kill path is the one
 `timeout` already uses, and the self-test fixture is a fake worker that prints
 nothing and sleeps.
 
+## 13. An uninformed retry is just throwing code at the wall
+
+Attempt 2 is handed the same brief as attempt 1, byte for byte, and told nothing
+about why attempt 1 failed. Measured on FinKit 2026-09-07, from the runner's own
+log:
+
+    [5b-report] attempt-1: worker starting (sonnet/medium, 9389 chars)
+    [5b-report] attempt-2: worker starting (sonnet/medium, 9389 chars)
+
+and, the night before, three attempts at 8555 chars each. The diagnostic worker
+that reads the transcripts and writes `remediation.md` runs only AFTER THE
+SECOND failure, so the first retry is a pure re-roll: same prompt, same
+baseline, different sampling. Nothing stops it repeating the identical mistake.
+
+It very nearly did. `5b-report` attempt-1 ran 11.3 minutes, exited 0, and failed
+`clean_tree` because the worker walked away while two background jobs were still
+running and left three paths uncommitted. Attempt 2 was given no hint of that
+and spent another 14 minutes; that it behaved differently was luck, not design.
+Paul's word for the pattern: "almost pointless and just about throwing code at
+the wall."
+
+**The fix is cheap, because the runner already holds the facts.** It knows which
+gate failed, it has the gate's output, and it has quarantined whatever untracked
+files the attempt left behind. None of that needs a model to produce. Make the
+escalation a ladder rather than a cliff:
+
+| attempt | what it is given |
+|---|---|
+| 1 | the brief |
+| 2 | the brief + the failed gate's NAME and its OUTPUT, truncated, stated as fact |
+| 3 | the brief + `remediation.md` from the diagnostic worker, as now |
+
+Attempt 2's addition should be mechanical and short - "attempt 1 failed the gate
+`clean_tree` with: `3 path(s) left uncommitted: M finkit/cli.py, ?? ...`. Do not
+repeat it." - and NOT the predecessor's code, which would anchor the retry on a
+design that has already failed once. The considered read of what actually went
+wrong stays where it is, at attempt 3, where it is worth paying a worker for.
+
+Cost: near zero, no extra worker. Benefit: the second of three attempts stops
+being a coin toss.
+
 ## 11. `--until`, not `--hours`: the operator's constraint is a deadline
 
 **The metric is wrong.** `--hours` asks for a duration. What an operator actually
