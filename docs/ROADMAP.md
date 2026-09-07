@@ -13,90 +13,6 @@ What has been built is listed at the bottom. Items 1 and 2 have designs under
 item 4's honest answer - "unverified off Windows" - is now stated in the README
 rather than left implied.
 
-## 9. A circuit breaker: stop when the failures stop being about the code
-
-**The gap.** The runner has no way to tell "this step failed" from "nothing can
-succeed right now". A worker that returns nothing because the account's usage
-window is exhausted looks exactly like a worker that wrote bad code: the gate
-fails, the tree resets, the attempt is retried, a diagnostic runs, the step is
-marked `STUCK`, and the loop moves to the next step and does it again. With
-thirty-odd steps pending and every attempt failing in seconds, a run can burn
-through the entire remaining plan in about twenty minutes and mark all of it
-`STUCK`. The operator wakes to a run that reports itself finished, a plan whose
-every step needs re-running, and no work done.
-
-`HALTED` exists but covers exactly one case - a third party committing to the
-branch mid-step (`overnight.py`, in the attempt loop). Nothing covers the general
-one.
-
-**Why it is not solved by scheduling.** This was worked around by hand on
-2026-09-06 by timing an overnight launch to start in a fresh usage window, with a
-short throwaway run burning the tail of the old one. That protects the first hour
-and nothing after it: a seven- or eight-hour run crosses a window boundary in the
-middle of the night whatever time it starts. The arithmetic of when to launch is
-a symptom, not a fix.
-
-**The shape.** Count consecutive steps that end in a failure outcome having
-produced NO commit. At a threshold - two is probably right, three at most - stop
-the run rather than continue: the run ends the way the clock ending it does, with
-`SUMMARY.md` written and the remaining steps left `PENDING`, so a relaunch after
-the window resets picks up exactly where it stopped. The signal is deliberately
-"failed AND committed nothing": a step that fails its gate having committed real
-work is a code problem and the existing retry is right for it, whereas a run of
-steps that produce nothing at all is a run whose environment has gone away.
-
-**What it must not do.** It must not try to identify a usage limit specifically -
-parsing an error string for a quota message would be brittle and would miss the
-other ways an environment can vanish (the CLI logged out, the network gone, a
-model id withdrawn). The threshold is the whole mechanism.
-
-**What it costs.** Small: a counter in the loop, a stop reason, and a self-test
-fixture where the fake worker fails N times in a row with no commit. The fixture
-is the reason it was not built on the night it was diagnosed - putting untested
-runner code under an unattended run is the trade the hard rules exist to refuse.
-
-## 10. Park and resume, rather than stop, when the usage window is the problem
-
-**Builds on item 9, and finishes it.** Item 9 is the detection: notice that
-nothing can succeed and stop marching through the plan. Stopping is the safe
-answer, not the right one - the operator still wakes to a run that did a fifth of
-its work and sat idle for six hours. The same signal deserves a better response:
-PARK, poll, and carry on when the quota comes back.
-
-**The behaviour.** On tripping the breaker the run does not end. It logs that it
-is parked, waits ~30 minutes, and probes. When the probe succeeds it resumes at
-the step it was on - the plan is the ledger, so "resume" is what this runner
-already does on every launch, and nothing new has to be remembered.
-
-**The probe must be cheap.** Retrying the real step is the obvious test and the
-wrong one: a build brief is thousands of characters, it writes a fresh cache
-prefix, and a failed probe every half hour all night is a bill for nothing. The
-probe should be the smallest possible worker - a trivial prompt, no tools, a
-one-word answer - so that testing "is the account alive" costs a rounding error.
-
-**The heartbeat must keep beating.** A parked run and a hung run look identical
-from outside, and this project has already learned that lesson once. While parked
-it must log on a cadence - parked since HH:MM, next probe at HH:MM, N probes so
-far - so that `/overnight progress` and a `tail -f` both show something moving.
-
-**The open question is the clock, and it is a real one.** `--hours` exists so the
-run is not still going when the operator wakes up; it is a wall-clock promise, not
-a compute budget. So parked time should almost certainly NOT extend `stop_at` -
-but then a three-hour park silently eats most of a seven-hour run, which is
-exactly the outcome the operator was trying to avoid by scheduling around the
-window in the first place. Neither answer is obviously right. A cap on total
-parked time, after which the run ends normally with `SUMMARY.md` written, is
-probably the honest middle - and whichever is chosen, the summary must say how
-much of the night went to waiting rather than working, or the efficiency figures
-lie about what the run cost per hour.
-
-**One consequence worth stating.** A parked run still holds its `.lock`, which is
-correct - it has not finished - but it means a scheduled relaunch fired at it
-while parked will refuse. Parking makes the scheduled-launch pattern redundant
-rather than complementary: once this exists, the right move is one long run that
-sleeps through the wall, not a chain of runs timed around it. That is the point -
-the timing arithmetic done by hand on 2026-09-06 stops being necessary.
-
 ## 11. `--until`, not `--hours`: the operator's constraint is a deadline
 
 **The metric is wrong.** `--hours` asks for a duration. What an operator actually
@@ -115,12 +31,14 @@ does so silently, because nothing in the run knows what time the operator meant.
 A deadline is invariant to when the launch actually happened, which is precisely
 the property an unattended, scheduled thing needs.
 
-**It resolves item 10's open question rather than inheriting it.** Under
-`--hours`, whether parked time should extend the run is a genuine dilemma with no
-clean answer. Under `--until` there is nothing to decide: the promise is a moment,
-so a park eats into the work and the deadline does not move. That is not a
-compromise, it is the operator's actual intent - they asked to see results by a
-time, not to be given a fixed quantity of compute whenever it could be spent.
+**It makes the parking rule obvious rather than arguable.** Parking already
+does NOT extend the stop time, which under `--hours` is a defensible choice
+rather than an evident one: a three-hour wall silently eats most of a run whose
+operator asked for six hours of work. Under `--until` there is nothing to argue
+about - the promise is a moment, so a park eats into the work and the deadline
+does not move, which is the operator's actual intent. They asked to see results
+by a time, not to be given a fixed quantity of compute whenever it could be
+spent.
 
 **It lets the runner stop honestly, which `--hours` cannot.** Today the clock
 stops the runner STARTING steps; a step already running carries on, so the real
@@ -333,6 +251,19 @@ decisions that followed, would be worth more than any amount of prose about it.
 
 ## Done
 
+- **A circuit breaker, and a run that waits out a usage wall** (originally items
+  9 and 10). The runner counts BARREN worker invocations - exited non-zero AND
+  produced no result event - and calls the wall at three in a row. The step it
+  happened on is recorded `NOT RUN`, never `STUCK`: no worker read the code, so
+  the morning is not handed findings about work nobody looked at. Then
+  `run.on_wall` decides: `park` (the default) probes every 30 minutes with a
+  haiku worker, no tools, one word of output, and resumes at the step it was on
+  when the account answers; `stop` ends the run with the rest left pending.
+  Parked time does not extend the stop time, and `SUMMARY.md` says how much of
+  the night went to waiting. The detection is a threshold, never a search for a
+  quota message: a logged-out CLI, a withdrawn model and a dead network fail the
+  same way and deserve the same answer. Proven against the unmodified runner,
+  which marched through the whole plan marking every untested step `STUCK`.
 - **Rescue tags over discarded work** (originally item 3). Every commit a reset would
   discard is tagged `rescue/<label>/<n>`, logged with its subject, and listed in
   `discarded-commits.md` in the step directory.

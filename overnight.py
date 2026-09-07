@@ -115,7 +115,20 @@ NO_GIT_NOTICE = (
     " committed. Gates and workers otherwise run normally.")
 
 RERUN_OUTCOMES = {"STUCK", "FAIL", "INCONCLUSIVE", "SKIPPED", "REWORK FAILED",
-                  "REVERTED BY REVIEW", "HALTED"}
+                  "REVERTED BY REVIEW", "HALTED", "NOT RUN"}
+
+# What a step gets when the WALL tripped during it: the workers produced nothing
+# at all, so nothing about the code was learned and nothing about the code should
+# be reported. Deliberately NOT `STUCK` - a STUCK step has had three real attempts
+# and a diagnostic and is a finding about the work, whereas this one was never
+# tested. It is in RERUN_OUTCOMES (a resume picks it straight back up) and out of
+# BLOCKING_OUTCOMES (it does not need a person, it needs the quota back).
+NOT_RUN = "NOT RUN"
+WALL_NOTE = (
+    "the worker could not run at all: {n} consecutive invocations returned nothing."
+    " That is the environment, not this step - a usage limit, a logged-out CLI, a"
+    " model withdrawn, the network gone. NOTHING WAS LEARNED ABOUT THIS STEP and"
+    " nothing here is a finding about the code; it is left to be re-run.")
 KINDS = ("build", "review", "reflect", "gate")
 DEFAULT_TIERS = {
     "build": {"model": "opus", "effort": "medium"},        # OM
@@ -610,6 +623,30 @@ class Runner:
         self.stop_at = time.time() + hours * 3600
         self.hours = hours
         self._ran_this_session = set()
+        # -- the wall -------------------------------------------------------
+        # A worker that returns NOTHING is not a worker that wrote bad code, and
+        # the runner used to be unable to tell the two apart: on 2026-09-07 the
+        # account's five-hour window closed mid-run and every remaining step was
+        # retried, diagnosed, marked STUCK and abandoned in seconds each, so the
+        # morning showed a plan whose every step needed re-running and a summary
+        # full of findings about code no worker had ever looked at.
+        #
+        # The signal is deliberately NOT the error text. Parsing for a quota
+        # message would be brittle and would miss the other ways an environment
+        # goes away, so what is counted is barren invocations: the worker failed
+        # AND produced no result event at all. N of those in a row means nothing
+        # can succeed right now, whatever the cause.
+        self.on_wall = str(self.args.on_wall or self.run_cfg.get("on_wall", "park")).strip()
+        if self.on_wall not in ("park", "stop"):
+            raise SpecError(f"run.on_wall must be `park` or `stop`, not `{self.on_wall}`")
+        self.wall_threshold = int(self.args.wall_threshold
+                                  or self.run_cfg.get("wall_threshold", 3))
+        self.park_poll_min = float(self.args.park_poll_min
+                                   or self.run_cfg.get("park_poll_min", 30))
+        self.barren = 0            # consecutive worker invocations that produced nothing
+        self.parked_seconds = 0.0  # for the summary: how much of the night went to waiting
+        self.probes = 0
+        self.probe_cost = 0.0
 
     # -- the ledger ----------------------------------------------------------
     def done_map(self, spec=None):
@@ -1261,7 +1298,108 @@ class Runner:
         # Held per step until the step is recorded; the run's total is then the sum
         # of the ledger and nothing accumulates it separately.
         self.step_cost[step_id] = self.step_cost.get(step_id, 0.0) + cost
+        self.count_barren(code, result, tag)
         return code, elapsed, result
+
+    def count_barren(self, code, result, tag):
+        """Track consecutive invocations that produced NOTHING. See __init__.
+
+        Barren is a high bar on purpose, and each half of it matters. The worker
+        must have FAILED - a worker that exits 0 having decided to do nothing is a
+        judgement, not an outage - and it must have produced NO result event: a
+        worker that ran, spent money and then hit the wall did real work, and the
+        wall it hit is the next invocation's business, not this one's.
+
+        124 is excluded because it is the runner's OWN timeout kill. A worker that
+        had to be killed is hung, not absent, and parking for half an hour would
+        neither diagnose it nor fix it.
+        """
+        did_something = bool(result.get("total_cost_usd") or result.get("num_turns"))
+        if code == 0 or code == 124 or did_something:
+            if self.barren:
+                self.log(f"{tag} the worker answered; the barren count goes back to 0")
+            self.barren = 0
+            return
+        self.barren += 1
+        self.log(f"{tag} the worker returned NOTHING (exit {code}, no result event)"
+                 f" - {self.barren} in a row, wall at {self.wall_threshold}")
+
+    def probe(self):
+        """Is the account answering at all? The smallest question that can be asked.
+
+        Retrying the real step is the obvious probe and the wrong one: a build
+        brief is thousands of characters, it writes a fresh cache prefix, and one
+        of those every half hour all night is a bill for nothing. This is haiku,
+        no tools, one word of expected output - a rounding error, which is what
+        lets the poll be frequent enough to be useful.
+        """
+        self.probes += 1
+        log_path = self.out / "probes" / f"probe-{self.probes:02d}.log"
+        argv = [self.claude, "-p", "--model", "haiku",
+                "--output-format", "stream-json", "--verbose",
+                "--disallowedTools", *UNATTENDED_DENY]
+        if self.args.fake_worker:
+            argv = [sys.executable, self.args.fake_worker] + argv[1:]
+        code, elapsed, result = self.run_worker(
+            argv, "Reply with the single word: ok", log_path, 300,
+            "    probe:", "_probe", "probe")
+        # The probe is not a step and will never be recorded, so its spend would
+        # sit in step_cost for ever and never reach the ledger. Taken out here and
+        # reported in its own right by write_summary.
+        self.probe_cost += self.step_cost.pop("_probe", 0.0)
+        alive = code == 0 and bool(result)
+        self.log(f"    probe {self.probes}: {'ALIVE' if alive else 'still walled'}"
+                 f" (exit {code}, {elapsed:.0f}s)")
+        return alive
+
+    def park(self, step_id):
+        """Wait for the environment to come back, and say so while waiting.
+
+        A parked run and a hung run look identical from outside, so this logs on a
+        cadence throughout: `/overnight progress` and a `tail -f` both keep showing
+        something moving.
+
+        PARKED TIME DOES NOT EXTEND THE CLOCK. `--hours` is a promise about when
+        the operator will be able to look, not a quantity of compute owed, so a
+        long wall eats into the work rather than pushing the run into the morning.
+        The cost of that choice is stated in SUMMARY.md rather than hidden: the
+        summary says how much of the night went to waiting.
+
+        Returns True if the environment came back and the run should carry on.
+        """
+        since = time.time()
+        self.log("=" * 72)
+        self.log(f"PARKED after {step_id}: {self.barren} consecutive workers returned"
+                 f" nothing, so nothing can succeed right now. The plan is NOT being"
+                 f" marched through - it waits here.")
+        self.log(f"    probing every {self.park_poll_min:.0f} min until the account"
+                 f" answers. The clock is unchanged: this run still stops starting"
+                 f" steps at {dt.datetime.fromtimestamp(self.stop_at):%H:%M}.")
+        while True:
+            next_probe = time.time() + self.park_poll_min * 60
+            while time.time() < next_probe:
+                if time.time() > self.stop_at:
+                    self.parked_seconds += time.time() - since
+                    self.log(f"    the stop time passed while parked."
+                             f" {(time.time() - since) / 60:.0f} min parked, "
+                             f"{self.probes} probe(s).")
+                    return False
+                # Five minutes, not thirty: the heartbeat is the whole reason a
+                # parked run is distinguishable from a dead one.
+                time.sleep(min(300, max(1.0, next_probe - time.time())))
+                if time.time() < next_probe:
+                    self.log(f"    parked {(time.time() - since) / 60:.0f} min,"
+                             f" next probe at"
+                             f" {dt.datetime.fromtimestamp(next_probe):%H:%M},"
+                             f" {self.probes} probe(s) so far", echo=False)
+            if self.probe():
+                self.parked_seconds += time.time() - since
+                self.barren = 0
+                self.log(f"RESUMING: the account answered after"
+                         f" {(time.time() - since) / 60:.0f} min parked and"
+                         f" {self.probes} probe(s). Picking up at {step_id}.")
+                self.log("=" * 72)
+                return True
 
     @staticmethod
     def result_of(log_path):
@@ -1628,7 +1766,15 @@ class Runner:
             return {"outcome": "DRY RUN", "attempts": 1, "note": note,
                     "minutes": round((time.time() - started) / 60, 1)}
         outcome = "REWORK FAILED" if rework else "STUCK"
-        self.log(f"[{step['id']}] {outcome} after {attempts} attempt(s) - moving on")
+        if self.barren >= self.wall_threshold:
+            # The caller is about to discard this outcome for NOT RUN, so saying
+            # STUCK here - let alone "moving on", which is exactly what it will not
+            # do - would put a finding about the code in the log two lines above
+            # the line explaining that no code was read.
+            self.log(f"[{step['id']}] every attempt returned nothing; the wall is called"
+                     " below and this outcome is discarded")
+        else:
+            self.log(f"[{step['id']}] {outcome} after {attempts} attempt(s) - moving on")
         return {"outcome": outcome, "attempts": attempts, "sha": self.head(),
                 "minutes": round((time.time() - started) / 60, 1), "note": note}
 
@@ -1909,6 +2055,28 @@ class Runner:
                       " plan already carried, not this rehearsal's.", ""]
         if not self.has_git:
             lines += ["> **" + NO_GIT_NOTICE.format(reason=self.no_git_reason) + "**", ""]
+        # SEPARATE from the parked note below, and it took the self-test to see
+        # why: under `--on-wall stop` nothing is ever parked, so a summary whose
+        # only explanation of NOT RUN hung off the parked block left the outcome
+        # standing in the table with nothing saying it was the environment.
+        if any((s.get("done") or {}).get("outcome") == NOT_RUN for s in self.spec["steps"]):
+            lines += [f"> **A step below is `{NOT_RUN}`.** The workers stopped answering"
+                      " entirely - a usage limit, a logged-out CLI, a withdrawn model,"
+                      " no network - so it was never really attempted. It is pending,"
+                      " not failed, and NOTHING in this run is a finding about its"
+                      " code. Relaunch when the account is back and it is picked up"
+                      " where it stopped.", ""]
+        if self.parked_seconds or self.probes:
+            # Said out loud, because otherwise every per-hour figure in this file
+            # lies about what the run cost: the hours are wall-clock and some of
+            # them bought nothing. Parked time never extended the clock, so this
+            # is time the plan lost, not time it was given.
+            hours = self.parked_seconds / 3600
+            lines += [f"> **{hours:.1f} h of this run was PARKED**, waiting for the"
+                      f" environment to come back, over {self.probes} probe(s)"
+                      f" costing ${self.probe_cost:.2f}. That time was not work and"
+                      " did not extend the stop time, so the per-hour figures below"
+                      " are hours, not effort.", ""]
         lines += [self.summary_table(), "",
                  "## Read next", "",
                  f"- `{self.out.relative_to(self.repo).as_posix()}/run.log`, then each step's directory.",
@@ -2038,6 +2206,9 @@ class Runner:
         self.log(f"run `{self.run_cfg['name']}`: spec {self.spec_path.name}, repo {self.repo},"
                  f" stop starting after {self.hours} h, dry_run={self.args.dry_run},"
                  f" fake_worker={bool(self.args.fake_worker)}")
+        self.log(f"    if {self.wall_threshold} workers in a row return nothing:"
+                 + (f" PARK and probe every {self.park_poll_min:.0f} min"
+                    if self.on_wall == "park" else " STOP, leaving the rest pending"))
         self.preflight()
         reason = "the queue finished"
         session = {}
@@ -2079,6 +2250,31 @@ class Runner:
                 outcome = self.run_reflect(step)
             else:
                 outcome = self.run_gate_step(step)
+            if self.barren >= self.wall_threshold:
+                # THE OUTCOME IS DISCARDED, and that is the point. This step's
+                # workers returned nothing, so `STUCK` here would be a finding
+                # about code nobody read - the exact thing that made the morning of
+                # 2026-09-07 unreadable. It is recorded as NOT RUN, which a resume
+                # picks straight back up, and the wall is dealt with below.
+                note = WALL_NOTE.format(n=self.barren)
+                self.log(f"[{step['id']}] {NOT_RUN} - {note}")
+                self.record(step, NOT_RUN, note=note,
+                            minutes=outcome.get("minutes"), attempts=outcome.get("attempts"))
+                session[step["id"]] = NOT_RUN
+                index += 1
+                if self.on_wall == "stop" or not self.park(step["id"]):
+                    todo = [s for s in todo if s["id"] != step["id"]]
+                    reason = (f"the environment stopped answering; {len(todo)} step(s)"
+                              " were left to run")
+                    self.log(f"STOP: {reason}: {', '.join(s['id'] for s in todo)}")
+                    self.log("    They are PENDING, not failed. Relaunch when the"
+                             " account is back and the run picks up where it stopped.")
+                    break
+                # Parked, probed, and the account came back. The step was never
+                # really attempted, so it goes back in the queue rather than being
+                # skipped as already-run this session.
+                self._ran_this_session.discard(step["id"])
+                continue
             if step["kind"] != "gate":
                 # RECORDED BY THE RUNNER, because the commit cannot be trusted for
                 # it: a step spawned sonnet/medium produced a commit trailer naming
@@ -2136,6 +2332,15 @@ run:
   attempts: 3                    # build attempts before STUCK
   worker_timeout_min: 90
   budget_usd_per_step: 40        # optional, --max-budget-usd on every worker
+  on_wall: park                  # when N workers in a row return NOTHING - a
+                                 # usage limit, a logged-out CLI, no network -
+                                 # the run stops marching through the plan.
+                                 # `park` (the default) waits and probes cheaply
+                                 # until the account answers, then carries on;
+                                 # `stop` ends the run there. Either way the
+                                 # untested steps are left PENDING, never STUCK.
+  wall_threshold: 3              # barren workers in a row before that happens
+  park_poll_min: 30              # minutes between probes while parked
   isolation: worktree            # THE DEFAULT. Each build step gets its own git
                                  # worktree on a scratch branch, integrated once
                                  # its gates pass; the operator's tree is never
@@ -2352,7 +2557,20 @@ def print_progress(where, which=""):
         print(f"\n  still to run: {', '.join(pending)}")
 
     started = [l for l in lines if "] start (" in l]
-    if started and not finished:
+    # PARKED FIRST, and instead of "in flight". A parked run's last `start (` line
+    # is the step it stopped on, which could be hours old - reported as in flight
+    # that reads exactly like a hang, which is the one thing parking must never
+    # look like.
+    parked = [i for i, l in enumerate(lines) if "PARKED after" in l]
+    resumed = [i for i, l in enumerate(lines) if "RESUMING:" in l]
+    is_parked = bool(parked) and not finished and (not resumed or parked[-1] > resumed[-1])
+    if is_parked:
+        print(f"\n  PARKED - waiting for the account, not stuck: {lines[parked[-1]]}")
+        probes = [l for l in lines
+                  if "still walled" in l or ": ALIVE" in l]
+        if probes:
+            print(f"    last probe: {probes[-1].strip()}")
+    elif started and not finished:
         print(f"\n  in flight: {started[-1]}")
     if out:
         for name, why in (("discarded-commits.md", "commits a reset would have thrown away"),
@@ -2382,6 +2600,17 @@ def main():
                              " directory. Exits 3 on BLOCKED.")
     parser.add_argument("--repo", default="", help="repository root (default: found above the spec)")
     parser.add_argument("--hours", type=float, default=None)
+    parser.add_argument("--on-wall", default="", choices=["", "park", "stop"],
+                        help="what to do when the workers stop answering entirely"
+                             " (a usage limit, a logged-out CLI, no network):"
+                             " `park` (the default) waits and probes until the"
+                             " account is back, `stop` ends the run and leaves the"
+                             " remaining steps pending")
+    parser.add_argument("--wall-threshold", type=int, default=0,
+                        help="consecutive workers returning nothing before the wall"
+                             " is called (default 3)")
+    parser.add_argument("--park-poll-min", type=float, default=0,
+                        help="minutes between probes while parked (default 30)")
     parser.add_argument("--from", dest="from_step", default="")
     parser.add_argument("--only", default="", help="comma-separated step ids")
     parser.add_argument("--rerun", action="store_true", help="re-run steps already PASSed in state")

@@ -29,6 +29,11 @@ REWORK heading); a review or reflect step by its own id.
 Behaviours:
   pass          write tests/test_<id>.py (passing) and commit
   fail-notest   do nothing
+  wall          THE USAGE WALL: exit 1 having emitted no result event at all,
+                the way `claude -p` does when the account's window is exhausted.
+                The key for a park probe is `_probe`, so a scenario can say
+                ["wall", "wall", "probe-ok"] to make the account come back.
+  probe-ok      answer a park probe normally (the default for kind `probe`)
   commit-wrong  commit real work but not the test the gate demands
   foreign-commit  a THIRD PARTY commits to the branch during the step, gate fails
   pass+main:unrelated   the worker passes in its own tree while a third party
@@ -107,13 +112,24 @@ def main():
     # cannot do: the run then shows INCONCLUSIVE verdicts and a reflect whose commit
     # gets discarded, and the demonstration teaches the wrong thing.
     default = {"diagnostic": "diag", "review": "review:pass",
-               "reflect": "reflect:none"}.get(kind, "pass")
+               "reflect": "reflect:none", "probe": "probe-ok"}.get(kind, "pass")
     behaviours = scenario.get(key) or [default]
     behaviour = behaviours[min(n, len(behaviours) - 1)]
 
     emit({"type": "assistant", "message": {"content": [
         {"type": "text", "text": f"fake worker: step {key}, call {n + 1}, behaviour {behaviour}"}]}})
 
+    if behaviour == "wall":
+        # NO RESULT EVENT, and a non-zero exit. That combination is the whole
+        # signal the runner watches for, and it is what the real CLI does when the
+        # five-hour window closes: it says so in prose and dies, having done no
+        # work and reported no cost.
+        sys.stdout.write("You've hit your session limit · resets 12:40am"
+                         " (Europe/London)\n")
+        sys.stdout.flush()
+        sys.exit(1)
+    if behaviour == "probe-ok":
+        return result("ok")
     safe = re.sub(r"[^a-z0-9_]", "_", step.lower())
     # `pass+main:...` - the worker does its normal job in its own tree while a
     # THIRD PARTY commits to the operator's branch, which is what isolation exists

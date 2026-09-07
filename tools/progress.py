@@ -119,6 +119,18 @@ def line(root):
             live = False
 
     if live:
+        # PARKED is checked first. The last line naming a step is then HOURS old -
+        # the step the run stopped on - and reporting it as what the run is doing
+        # now is precisely the reading that makes a parked run look like a hung
+        # one at 3am, which is the question this script exists to answer.
+        latest = next((t for _, t in reversed(events)
+                       if t.startswith(("PARKED after", "RESUMING:"))), "")
+        if latest.startswith("PARKED"):
+            waiting = next((t for _, t in reversed(events)
+                            if t.lstrip().startswith("parked ")), "")
+            return (f"{name} `{run.name}`: PARKED (waiting for the account, not stuck),"
+                    f" {done}/{total} steps done, ${cost:.2f}"
+                    f" | {waiting.strip()[:110]} | last line {since(last[0])} ago")
         # The most recent line that names a step is what it is doing now; the
         # heartbeat lines carry the elapsed minutes and the log size with them.
         doing = next((t for _, t in reversed(events) if t.startswith("[")), last[1])

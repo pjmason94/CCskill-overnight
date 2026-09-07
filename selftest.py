@@ -26,8 +26,10 @@ rescue tag over work a gate discarded; a project with NO GIT AT ALL, which must
 degrade (warn once, skip clean_tree, skip review) rather than refuse; a THIRD
 PARTY committing to the branch mid-step, which must be refused and never
 destroyed; the LEDGER - `done:` spliced into the plan file without disturbing a
-comment or another step - and `--reset-state` stripping it; and `--mode`, which
-must say BLOCKED for a stuck plan and never anything else.
+comment or another step - and `--reset-state` stripping it; `--mode`, which must
+say BLOCKED for a stuck plan and never anything else; and the USAGE WALL, where
+the workers stop answering entirely and the run must park (or stop) rather than
+march through the plan marking untested steps STUCK.
 
 Run this before every overnight launch. A runner path that has not been exercised
 is a path that will be exercised for the first time at 03:00.
@@ -167,6 +169,35 @@ steps:
     brief: overnight/briefs/s1.md
     gates:
       - cmd: python -m pytest -q tests/test_s1.py
+"""
+
+# THE USAGE WALL. Two steps, so that "s2 was never started" is a thing the run
+# can be asked about; three attempts, so a whole step's worth of retries is spent
+# on a worker that returns nothing, which is exactly the shape of the incident
+# (2026-09-07) rather than a contrived single failure.
+WALL_SPEC = """\
+run:
+  name: wall
+  hours: 1
+  attempts: 3
+  worker_timeout_min: 2
+  preamble: overnight/briefs/_preamble.md
+  gates:
+    - {name: suite, cmd: python -m pytest -q tests/test_base.py}
+    - {clean_tree: true}
+steps:
+  - id: s1
+    kind: build
+    title: the account's window closes during this step
+    brief: overnight/briefs/s1.md
+    gates:
+      - cmd: python -m pytest -q tests/test_s1.py
+  - id: s2
+    kind: build
+    title: must never be started while the wall stands
+    brief: overnight/briefs/s2.md
+    gates:
+      - cmd: python -m pytest -q tests/test_s2.py
 """
 
 SCENARIO = {
@@ -906,6 +937,112 @@ def main():
               (old / "overnight" / "runs" / "default-iso" / "s1"
                / "discarded-commits.md").exists()
               and "fake: s1 built" in sh(old, "git", "tag", "-l").stdout + olog, olog[-600:])
+
+        print("15. the usage wall: park or stop, but never march through the plan")
+        # THE INCIDENT OF 2026-09-07, reproduced. The account's five-hour window
+        # closed mid-run; every worker after it returned nothing in seconds, and
+        # the runner - unable to tell "this step failed" from "nothing can succeed"
+        # - retried, diagnosed, marked STUCK and moved on, thirty-odd times. The
+        # morning showed a plan whose every step needed re-running and a summary
+        # full of findings about code no worker had ever read.
+
+        def wall_repo(name, scenario, *extra):
+            where = make_repo(root / name)
+            (where / "overnight" / "steps.yaml").write_text(WALL_SPEC, encoding="utf-8")
+            sh(where, "git", "add", "-A")
+            sh(where, "git", "commit", "-q", "-m", "wall spec")
+            scen = root / f"scenario-{name}.json"
+            scen.write_text(json.dumps(scenario), encoding="utf-8")
+            done_ = run_runner(where, scen, *extra)
+            wlog = (where / "overnight" / "runs" / "wall" / "run.log").read_text(
+                encoding="utf-8")
+            return where, done_, wlog
+
+        walled, done, wlog = wall_repo(
+            "wall-stop", {"s1": ["wall"], "s1#diag": ["wall"]}, "--on-wall", "stop")
+        wsteps = ledger(walled)
+        # NOT `STUCK`. A STUCK step has had three real attempts and a diagnostic
+        # and is a finding about the work; this one was never tested at all, and
+        # calling it STUCK is what made the morning unreadable.
+        check("a walled step is NOT RUN, not STUCK",
+              wsteps.get("s1", {}).get("outcome") == "NOT RUN",
+              str(wsteps.get("s1")))
+        check("...and says the environment was the reason, not the code",
+              "NOTHING WAS LEARNED ABOUT THIS STEP" in str(wsteps.get("s1", {}).get("note")),
+              str(wsteps.get("s1", {}).get("note")))
+        # The whole point: the run does not go on to burn the rest of the plan.
+        check("the next step is never started", "s2" not in wsteps, str(wsteps))
+        check("...and the run says so, naming what is left",
+              "the environment stopped answering" in wlog and "s2" in wlog, wlog[-600:])
+        check("the wall was called on consecutive empty workers, not an error string",
+              "returned NOTHING (exit 1, no result event)" in wlog, wlog[-800:])
+        check("a NOT RUN step is resumable, not blocking",
+              is_resumable(yaml.safe_load(spec_text(walled))["steps"][0]))
+        check("--mode does not report a walled plan as BLOCKED",
+              subprocess.run([sys.executable, str(RUNNER), "--mode", str(walled)],
+                             capture_output=True, text=True).stdout.strip() != "BLOCKED")
+        wsummary = (walled / "overnight" / "runs" / "wall" / "SUMMARY.md").read_text(
+            encoding="utf-8")
+        # Under `stop` nothing is ever parked, so this sentence must NOT hang off
+        # the parked note - which is exactly where it was, leaving NOT RUN standing
+        # in the table with nothing saying the environment caused it.
+        check("SUMMARY says the untested step is pending, not failed",
+              "pending, not failed" in wsummary
+              and "never really attempted" in wsummary, wsummary[:1200])
+
+        # And the default: park, probe, and carry on. The account comes back on the
+        # second probe, and the step that was never really attempted then runs for
+        # real - which is the behaviour that makes an overnight run survive a
+        # window boundary instead of being timed around one.
+        parked, done, plog = wall_repo(
+            "wall-park",
+            {"s1": ["wall", "wall", "wall", "pass"], "s1#diag": ["wall"],
+             "_probe": ["wall", "probe-ok"]},
+            "--park-poll-min", "0.02")
+        psteps = ledger(parked)
+        check("parked rather than stopping (the default)", "PARKED after s1" in plog,
+              plog[-800:])
+        check("...probed cheaply instead of retrying the step",
+              "probe 1: still walled" in plog and "probe 2: ALIVE" in plog, plog[-900:])
+        check("...and the probe is a haiku worker, not the step's own brief",
+              "--model haiku" in (parked / "overnight" / "runs" / "wall" / "probes"
+                                  / "probe-01.log").read_text(encoding="utf-8"))
+        check("...resumed the step it was on", "RESUMING" in plog, plog[-800:])
+        check("...which then ran for real and passed",
+              psteps.get("s1", {}).get("outcome") == "PASS", str(psteps.get("s1")))
+        check("...and the rest of the plan ran too",
+              psteps.get("s2", {}).get("outcome") == "PASS", str(psteps.get("s2")))
+        check("...with the run finishing clean", done.returncode == 0, plog[-400:])
+        psummary = (parked / "overnight" / "runs" / "wall" / "SUMMARY.md").read_text(
+            encoding="utf-8")
+        # Every per-hour figure in the summary is wall-clock, so a run that spent
+        # part of the night waiting has to say so or the numbers lie.
+        check("SUMMARY declares the time that went to waiting",
+              "was PARKED" in psummary and "did not extend the stop time" in psummary,
+              psummary[:900])
+
+        # BOTH progress readers, against a log cut off mid-park. A parked run's
+        # last `start (` line is the step it stopped on and can be hours old; read
+        # as "in flight" it is indistinguishable from a hang, which is the single
+        # thing parking must never look like - and the 3am question this project
+        # already learned to answer is exactly "is it stuck?".
+        pdir = parked / "overnight" / "runs" / "wall"
+        cut = plog[:plog.index("RESUMING")]
+        assert "PARKED after" in cut and "run finished" not in cut
+        (pdir / "run.log").write_text(cut, encoding="utf-8")
+        # The lock is the REPOSITORY's, beside the run directories, not inside one.
+        (parked / "overnight" / "runs" / ".lock").write_text(
+            json.dumps({"pid": os.getpid()}), encoding="utf-8")
+        prog = subprocess.run([sys.executable, str(RUNNER), "--progress", str(parked)],
+                              capture_output=True, text=True, encoding="utf-8").stdout
+        check("--progress calls a parked run parked, not in flight",
+              "PARKED - waiting for the account, not stuck" in prog
+              and "in flight" not in prog, prog[-600:])
+        one = subprocess.run([sys.executable, str(HERE / "tools" / "progress.py"),
+                              str(parked)], capture_output=True, text=True,
+                             encoding="utf-8").stdout
+        check("the one-line report says PARKED, not the step it stopped on",
+              "PARKED (waiting for the account, not stuck)" in one, one)
 
         if failures:
             print("\n--- run.log tail ---")

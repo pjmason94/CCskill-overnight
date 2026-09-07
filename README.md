@@ -297,6 +297,50 @@ such.
 Commands only, no worker. For a long measurement whose result is a number in a
 file, or a checkpoint you want recorded between builds.
 
+### When the workers stop answering: the wall
+
+A worker that returns nothing looks exactly like a worker that wrote bad code -
+the gate fails, the tree resets, the attempt is retried, the step is marked
+`STUCK` and the loop moves on. With thirty steps pending and every attempt failing
+in seconds, a run can burn the whole remaining plan in twenty minutes and mark all
+of it `STUCK`. That happened on 2026-09-07, when the account's five-hour usage
+window closed mid-run.
+
+So the runner counts **barren** invocations: the worker exited non-zero AND
+produced no result event at all. Both halves matter - a worker that exits 0 having
+decided to do nothing made a judgement, and a worker that spent money before
+dying did real work. Three barren workers in a row (`wall_threshold`) and the run
+stops treating the plan as the problem. What is *not* used is the error text: a
+usage message would be brittle to parse, and a logged-out CLI, a withdrawn model
+and a dead network all fail the same way and deserve the same answer.
+
+The step it happened on is recorded **`NOT RUN`**, never `STUCK`. No worker read
+the code, so nothing about the code was learned, and the summary says so rather
+than reporting findings about work nobody looked at. `NOT RUN` is resumable and
+does not make `--mode` say BLOCKED.
+
+Then, per `run.on_wall`:
+
+- **`park`, the default.** The run waits, and every 30 minutes asks the cheapest
+  possible question - a haiku worker, no tools, a one-word answer - until the
+  account answers, then resumes at the step it was on. Retrying the real step as
+  the probe would re-spend a build brief every half hour all night; this costs a
+  rounding error. It logs every five minutes while parked, because a parked run
+  and a hung run must not look alike from outside.
+- **`stop`.** The run ends there and every remaining step is left pending. Use it
+  when nobody will be up to benefit from a resume.
+
+**Parked time does not extend the stop time.** `--hours` is a promise about when
+you can look, not a quantity of compute you are owed, so a long wall eats into the
+night's work rather than pushing the run into your morning. `SUMMARY.md` states
+how much of the run went to waiting, over how many probes and at what cost, so the
+per-hour figures cannot quietly overstate what the night bought.
+
+One consequence: a parked run still holds its `.lock`, correctly - it has not
+finished - so a scheduled relaunch fired at it while parked will refuse. Once
+parking is on, the right pattern is **one long run that sleeps through the wall**,
+not a chain of runs timed around it.
+
 ## 5. Git: what it needs and what it does
 
 **Git is recommended, not forced.** Put every project you run this over in a
@@ -440,6 +484,9 @@ where the run directory is and that the tree is off limits.
 | `decisions_file` | `overnight/DECISIONS-PENDING.md` | where workers write questions and findings; read by reflect steps |
 | `out` | `overnight/runs` | the parent of the run directory |
 | `defaults` | opus/medium build; opus/high review, reflect, diagnostic | model and effort per kind: `build: {model: sonnet, effort: medium}` |
+| `on_wall` | `park` | what to do when workers stop answering entirely: `park` waits and probes until the account is back, `stop` ends the run. See section 4 |
+| `wall_threshold` | 3 | consecutive workers returning NOTHING before that happens |
+| `park_poll_min` | 30 | minutes between probes while parked |
 | `gates` | none | universal gates, appended to every build step's own |
 
 ### A step
@@ -522,6 +569,9 @@ step id.
 | `--spec <path>` | required. The steps file. Give an ABSOLUTE path |
 | `--repo <dir>` | the repository root. Default: found by walking up from the spec |
 | `--hours <n>` | overrides `run.hours` |
+| `--on-wall park\|stop` | overrides `run.on_wall`: what to do when the workers stop answering entirely |
+| `--wall-threshold <n>` | overrides `run.wall_threshold` |
+| `--park-poll-min <n>` | overrides `run.park_poll_min` |
 | `--list` | print every step, its kind, its recorded outcome, its title; exit |
 | `--print-brief <id>` | print the composed brief a build or reflect worker would receive; exit |
 | `--format` | print the steps file reference form; exit |
@@ -537,7 +587,7 @@ block on each step, committed as they happen. Relaunching with the same spec
 skips every step that completed: PASS, a review that ran, a reflect that ran,
 anything SKIPPED for a reason that will not change. It re-runs a step that did
 not complete: STUCK, FAIL, HALTED, INCONCLUSIVE, REWORK FAILED, REVERTED BY
-REVIEW, and a review SKIPPED because its subject had not passed. `--rerun`
+REVIEW, NOT RUN, and a review SKIPPED because its subject had not passed. `--rerun`
 re-runs passed steps too; `--reset-state` strips every `done:` from the plan,
 commits that, and **exits**. It is an exclusive action, like `--list` and
 `--print-brief`: forgetting a night's outcomes is a decision of its own, and
@@ -559,7 +609,7 @@ BLOCKED is tested first and deliberately overrides the rest.
 **Exit code.** 0 when every recorded outcome is benign (PASS, REVIEW PASS, REVIEW
 REWORK PASS, REFLECT NO CHANGE, REFLECT CHANGED, SKIPPED); 1 when any is not
 (STUCK, HALTED, FAIL, REVIEW FAIL, REVIEW REWORK FAILED, REFLECT REVERTED,
-INCONCLUSIVE); 2 when preflight refused to start. Unknown step ids and a missing
+INCONCLUSIVE, NOT RUN); 2 when preflight refused to start. Unknown step ids and a missing
 `claude` exit 1 with a message before anything runs.
 
 ## 10. Outputs

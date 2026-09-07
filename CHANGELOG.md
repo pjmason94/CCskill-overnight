@@ -7,6 +7,40 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Added
 
+- **A circuit breaker for the usage wall, and a run that waits it out rather
+  than burning the plan against it.** When a worker returns nothing at all -
+  exits non-zero having produced no result event - the runner now counts it. Three
+  of those in a row (`run.wall_threshold`, `--wall-threshold`) means nothing can
+  succeed right now, and the run stops treating the plan as the problem.
+
+  The step it happened on is recorded **`NOT RUN`**, never `STUCK`: no worker read
+  the code, so nothing about the code was learned, and its note says so. `NOT RUN`
+  is resumable, so a later launch picks it straight back up, and it is not a
+  blocking outcome, so `--mode` does not report the plan as BLOCKED for it.
+
+  What happens next is `run.on_wall` / `--on-wall`:
+
+  - **`park` (the default)** waits and probes every 30 minutes
+    (`run.park_poll_min`, `--park-poll-min`) until the account answers, then
+    resumes at the step it was on. The probe is a haiku worker with no tools and a
+    one-word answer, so testing "is the account alive" costs a rounding error
+    rather than re-spending a build brief. While parked it logs every five minutes -
+    a parked run and a hung run must not look alike.
+  - **`stop`** ends the run there, leaving every remaining step pending.
+
+  Parked time does **not** extend the stop time: `--hours` is a promise about when
+  you can look, not a quantity of compute owed. `SUMMARY.md` says how much of the
+  run went to waiting, over how many probes and at what cost, so the per-hour
+  figures cannot quietly lie about what the night bought.
+
+  This is the fix for the run of 2026-09-07, where the account's five-hour window
+  closed mid-run and the runner - unable to tell "this step failed" from "nothing
+  can succeed" - retried, diagnosed and marked `STUCK` thirty-odd untested steps
+  in about twenty minutes. The detection is deliberately **not** a search for a
+  quota message in the error text: that would be brittle and would miss a
+  logged-out CLI, a withdrawn model or a dead network, which fail the same way and
+  deserve the same answer.
+
 - `tools/progress.py <project dir> ...` prints **one line per project** and
   nothing else: whether a run is live, the step it is on this minute, how far
   through the plan it is, and what it has spent. It exists for the question asked
