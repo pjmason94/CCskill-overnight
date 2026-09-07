@@ -11,7 +11,9 @@ run:
   hours: 7                       # stop STARTING steps after this many hours
   attempts: 3                    # build attempts before STUCK
   worker_timeout_min: 90         # default hard kill per worker
-  budget_usd_per_step: 40        # optional; --max-budget-usd on each worker
+  budget_usd_per_step: 40        # optional; --max-budget-usd on each worker.
+                                 # A build attempt that trips it is OVER BUDGET,
+                                 # is not retried, and blocks the plan
   isolation: worktree            # THE DEFAULT; `in-place` is the opt-out. Each
                                  # build step gets its own worktree on a scratch
                                  # branch, integrated once its gates pass, so
@@ -85,7 +87,9 @@ its own work. Up to `attempts` tries; a failed gate resets to the attempt's
 baseline. After the second failure a **diagnostic** worker reads a compact
 transcript of both attempts - the assistant's words and every tool error, tens of
 KB instead of megabytes - and writes `remediation.md`, which the third attempt
-ingests. Still failing: STUCK, and the run moves on.
+ingests. Still failing: STUCK, and the run moves on. The one failure that is not
+retried is a worker cut off by `budget_usd_per_step` - that is OVER BUDGET, and
+it stops.
 
 **review** - reads a passed commit named by `of:`, at `bypassPermissions` with
 Edit, Write and NotebookEdit disallowed, and returns a typed verdict through
@@ -152,12 +156,12 @@ re-dumps the file, because that would destroy comments, key order and quoting.
 ## Resume
 
 A step is complete iff it carries `done:` with an outcome outside `STUCK`,
-`HALTED`, `FAIL`, `INCONCLUSIVE`, `SKIPPED`, `REWORK FAILED` and
-`REVERTED BY REVIEW`. A relaunch skips what completed and re-runs the rest.
+`HALTED`, `FAIL`, `INCONCLUSIVE`, `SKIPPED`, `REWORK FAILED`,
+`REVERTED BY REVIEW`, `NOT RUN` and `OVER BUDGET`. A relaunch skips what completed and re-runs the rest.
 `--rerun` forces everything; `--reset-state` strips every `done:` from the file,
 commits that and exits without launching - the flag has outlived the file it was
 named for.
 
-`--mode` prints what to do next from the plan alone: `BLOCKED` (a STUCK or
-HALTED step needs a person; exits 3), `PLAN` (no plan file), `RUN` (steps still
+`--mode` prints what to do next from the plan alone: `BLOCKED` (a STUCK, HALTED
+or OVER BUDGET step needs a person; exits 3), `PLAN` (no plan file), `RUN` (steps still
 to run) or `REPLACE?` (everything completed).

@@ -45,6 +45,12 @@ Behaviours:
   pass-unicode  pass, but report a summary the console may not be able to print
                 (a `<=`, an accent, a tick), which is what a real worker writes
                 and what killed a live run under Task Scheduler's cp1252 console
+  over-budget   the per-step `--max-budget-usd` cap trips: the worker is cut off
+                part-way, having written but not committed, and exits 1 with a
+                result event of subtype error_max_budget_usd
+  over-budget-late  the same trip, but AFTER the work is committed and the gates
+                will pass - a step that succeeded and merely ran out on the way
+                out, which must still be a PASS
   commit-wrong  commit real work but not the test the gate demands
   foreign-commit  a THIRD PARTY commits to the branch during the step, gate fails
   pass+main:unrelated   the worker passes in its own tree while a third party
@@ -235,6 +241,32 @@ def main():
               "usage": {"input_tokens": 8, "cache_creation_input_tokens": 3591,
                         "cache_read_input_tokens": 889344, "output_tokens": 2460}})
         return
+    if behaviour in ("over-budget", "over-budget-late"):
+        # THE PER-STEP CAP TRIPPED. `--max-budget-usd` cuts the worker off at a
+        # turn boundary, part-way through the job: here the test file is written
+        # but nothing is committed, so the gate fails - and a retry would only
+        # spend a fresh cap to be cut off at the same place. Shape measured
+        # against the real CLI on 2026-09-07: exit 1, and a result event whose
+        # subtype is error_max_budget_usd, is_error true, terminal_reason
+        # budget_exhausted. It HAS a result event and a cost, so the wall
+        # counter must read it as a worker that answered, not a barren one.
+        tests = repo / "tests"
+        tests.mkdir(exist_ok=True)
+        path = tests / f"test_{safe}.py"
+        path.write_text(f"def test_{safe}():\n    assert True  # half done\n",
+                        encoding="utf-8")
+        if behaviour == "over-budget-late":
+            # THE OTHER HALF: the cap trips on the tidying up, AFTER the work is
+            # committed and the gates will pass. The step succeeded; that it ran
+            # out of money on the way out is nobody's business, and calling it
+            # OVER BUDGET would throw away work that is on the branch.
+            git(repo, "add", str(path.relative_to(repo).as_posix()))
+            git(repo, "commit", "-q", "-m", f"fake: {key} built, then ran out")
+        emit({"type": "result", "subtype": "error_max_budget_usd", "is_error": True,
+              "terminal_reason": "budget_exhausted", "num_turns": 37,
+              "duration_ms": 1200000, "total_cost_usd": 6.0231,
+              "result": f"{key}: cut off by the budget part-way through"})
+        sys.exit(1)
     if behaviour in ("pass", "fail-dirty", "pass-unicode"):
         tests = repo / "tests"
         tests.mkdir(exist_ok=True)

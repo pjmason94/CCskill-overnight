@@ -22,8 +22,16 @@ the tree would have destroyed somebody else's work. The runner refused, which is
 correct, but it means the step's own state was never cleaned up and the branch
 now holds commits from two sources.
 
-Both mean the ground is wrong, not that the step was unlucky. Finding that out at
-09:00 costs one step; not finding out costs the four steps built on top of it.
+**OVER BUDGET** - the worker was cut off part-way by `run.budget_usd_per_step`,
+having spent the whole cap. It is deliberately not retried: the cap is per worker
+invocation, so a second attempt buys the same cut-off at the same price. Nothing
+here says the worker was wrong - it says the brief asks for more than the cap
+will pay for, or the cap is set below what the work costs, and only the user can
+say which.
+
+All three mean the ground is wrong, not that the step was unlucky. Finding that
+out at 09:00 costs one step; not finding out costs the four steps built on top
+of it.
 
 ## What to report
 
@@ -40,10 +48,16 @@ and find any of it.
    `overnight/runs/<run>/<step>/discarded-commits.md`: its sha, who made it and
    its subject line. Say plainly that the tree was NOT reset and that the branch
    holds both the run's commits and theirs.
-4. **Anything that step wrote to `overnight/DECISIONS-PENDING.md`.** Workers are
+4. **For OVER BUDGET - the two figures in the `note:`**: what the worker spent
+   and what the cap was, and what the step's other attempts (if any) cost. Then
+   say which of the two choices the user is being asked to make - split the step
+   into smaller ones, or raise `run.budget_usd_per_step` - and, if the run's
+   other steps have costs recorded, what a step of this size has actually been
+   costing. Do not recommend raising the cap without that number.
+5. **Anything that step wrote to `overnight/DECISIONS-PENDING.md`.** Workers are
    told to write findings there as they learn them, so a step that got into
    trouble has usually said why.
-5. **What else was in flight**: how many steps remain, and whether any of them
+6. **What else was in flight**: how many steps remain, and whether any of them
    depend on this one. A stuck step that nothing depends on is a different
    conversation from one that four steps build on.
 

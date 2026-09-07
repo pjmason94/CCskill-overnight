@@ -248,6 +248,16 @@ ones - from the repository root.
   is re-run on the next launch (section 9, resume).
 - **The worker is killed** if it exceeds `timeout_min` (default
   `run.worker_timeout_min`, 90); that counts as a failed attempt.
+- **The worker ran out of budget:** OVER BUDGET, and the step is **not retried**.
+  `run.budget_usd_per_step` is passed to each worker as `--max-budget-usd`, and it
+  is per *invocation* - retrying spends the whole cap again to be cut off in the
+  same place, so a $6 cap could bill $18 and learn nothing. A cap trip is a
+  planning failure, not a finding about the code: either the brief asks for more
+  than the cap will pay for or the cap is too low, and only a person can say
+  which. The step is blocking (`--mode` prints `BLOCKED`) and resumable, and its
+  note names both figures, e.g. `worker RAN OUT OF BUDGET ($6.02 against a $6.00
+  cap)`. A worker that commits passing work and only then runs out on the tidying
+  up is still a PASS - the gates decide, not the exit code.
 
 ### Review steps
 
@@ -491,7 +501,7 @@ where the run directory is and that the tree is off limits.
 | `review_timeout_min` | 30 | the same for a review worker |
 | `reflect_timeout_min` | 30 | the same for a reflect worker |
 | `diagnostic_timeout_min` | 20 | the same for the diagnostic pass |
-| `budget_usd_per_step` | none | passed to every worker as `--max-budget-usd` (see section 14 on what that figure is) |
+| `budget_usd_per_step` | none | passed to every worker as `--max-budget-usd`; a build attempt that trips it is OVER BUDGET and is not retried (see section 14 on what that figure is) |
 | `preamble` | none | a file prepended to every build brief; `{CHUNK}` in it is replaced by the step id |
 | `decisions_file` | `overnight/DECISIONS-PENDING.md` | where workers write questions and findings; read by reflect steps |
 | `out` | `overnight/runs` | the parent of the run directory |
@@ -600,7 +610,8 @@ block on each step, committed as they happen. Relaunching with the same spec
 skips every step that completed: PASS, a review that ran, a reflect that ran,
 anything SKIPPED for a reason that will not change. It re-runs a step that did
 not complete: STUCK, FAIL, HALTED, INCONCLUSIVE, REWORK FAILED, REVERTED BY
-REVIEW, NOT RUN, and a review SKIPPED because its subject had not passed. `--rerun`
+REVIEW, NOT RUN, OVER BUDGET, and a review SKIPPED because its subject had not
+passed. `--rerun`
 re-runs passed steps too; `--reset-state` strips every `done:` from the plan,
 commits that, and **exits**. It is an exclusive action, like `--list` and
 `--print-brief`: forgetting a night's outcomes is a decision of its own, and
@@ -612,7 +623,7 @@ starting the plan again is the next command, typed deliberately. (Until
 
 | it prints | when | exit |
 |---|---|---|
-| `BLOCKED` | a step is STUCK or HALTED - it needs a person | 3 |
+| `BLOCKED` | a step is STUCK, HALTED, OVER BUDGET or NEEDS MERGE - it needs a person | 3 |
 | `PLAN` | there is no plan file | 0 |
 | `RUN` | steps are still to run | 0 |
 | `REPLACE?` | every step completed | 0 |
@@ -622,7 +633,7 @@ BLOCKED is tested first and deliberately overrides the rest.
 **Exit code.** 0 when every recorded outcome is benign (PASS, REVIEW PASS, REVIEW
 REWORK PASS, REFLECT NO CHANGE, REFLECT CHANGED, SKIPPED); 1 when any is not
 (STUCK, HALTED, FAIL, REVIEW FAIL, REVIEW REWORK FAILED, REFLECT REVERTED,
-INCONCLUSIVE, NOT RUN); 2 when preflight refused to start. Unknown step ids and a missing
+INCONCLUSIVE, NOT RUN, OVER BUDGET); 2 when preflight refused to start. Unknown step ids and a missing
 `claude` exit 1 with a message before anything runs.
 
 ## 10. Outputs
@@ -662,7 +673,8 @@ Everything is under `overnight/runs/<run name>/`:
     2026-09-05 13:34:12  [3b-two-pass-compiler] attempt-1: worker exit 0 after 27.1 min | turns=61 $8.12 | <first 300 chars of the worker's summary>
     2026-09-05 13:36:40  [3b-two-pass-compiler] PASS (committed at 1f3c9a2e)
 
-Lines to grep for: `start (`, `PASS`, `FAIL`, `STUCK`, `HALTED`, `verdict`,
+Lines to grep for: `start (`, `PASS`, `FAIL`, `STUCK`, `HALTED`, `OVER BUDGET`,
+`STALLED`, `TIMED OUT`, `verdict`,
 `rework`, `PLAN CHANGED`, `REVERTED`, `DISCARDING`, `REFUSING`, `QUARANTINED`,
 `CANNOT RESET`, `REFUSING TO START`, `STOP:`, `summary written`. The heartbeat
 (`still running`) is the line to grep OUT.
@@ -717,9 +729,10 @@ step: a rework or a revert replaces the block in place.
 the file immediately before each write and touches only the block it is
 recording. Editing a step that already carries `done:` is not defended against.
 
-Outcomes: `PASS`, `STUCK`, `HALTED`, `FAIL` (a gate step), `SKIPPED`,
-`INCONCLUSIVE`, `REVIEW PASS`, `REVIEW REWORK PASS`, `REVIEW REWORK FAILED`,
-`REVIEW FAIL`, `REVERTED BY REVIEW` (on the reviewed step), `REFLECT CHANGED`,
+Outcomes: `PASS`, `STUCK`, `HALTED`, `OVER BUDGET`, `NOT RUN`, `NEEDS MERGE`,
+`FAIL` (a gate step), `SKIPPED`, `INCONCLUSIVE`, `REVIEW PASS`,
+`REVIEW REWORK PASS`, `REVIEW REWORK FAILED`, `REVIEW FAIL`,
+`REVERTED BY REVIEW` (on the reviewed step), `REFLECT CHANGED`,
 `REFLECT NO CHANGE`, `REFLECT REVERTED`.
 
 ### `verdict.json`
@@ -811,7 +824,7 @@ words, the tool calls, every tool error) is what to look at; there is no CLI for
 it yet, but `Runner.compact_transcript(path)` is importable.
 
 **Signals worth reacting to** (these are the lines a monitor should match):
-`FAIL`, `STUCK`, `HALTED`, `REFUSING`, `CANNOT RESET`, `verdict REWORK`,
+`FAIL`, `STUCK`, `HALTED`, `OVER BUDGET`, `REFUSING`, `CANNOT RESET`, `verdict REWORK`,
 `verdict FAIL`, `REVERTED`, `STOP:`, and a heartbeat whose log size has stopped
 changing.
 
@@ -971,7 +984,11 @@ their environment (section 12), so on a subscription they spend the
 subscription's allowance and the dollar figure is notional - but
 `budget_usd_per_step` is enforced against that notional figure, and will halt a
 worker that exceeds it. Set it well above what a good step costs (45 was right
-for opus/medium) or leave it unset.
+for opus/medium) or leave it unset - a step that trips the cap is OVER BUDGET,
+is not retried, and blocks the plan until a person looks at it (section 8), so a
+cap set too tight costs a night rather than saving money. The cap is also only
+checked at **turn boundaries**: a $0.002 cap measured on 2026-09-07 let a $0.069
+turn through, 34x over, so treat it as a backstop and not a precise limit.
 
 **Where the money actually goes** is measured in `docs/token-efficiency.md`, over
 every real worker this project has run: cost is API calls multiplied by the

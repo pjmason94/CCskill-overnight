@@ -115,7 +115,7 @@ NO_GIT_NOTICE = (
     " committed. Gates and workers otherwise run normally.")
 
 RERUN_OUTCOMES = {"STUCK", "FAIL", "INCONCLUSIVE", "SKIPPED", "REWORK FAILED",
-                  "REVERTED BY REVIEW", "HALTED", "NOT RUN"}
+                  "REVERTED BY REVIEW", "HALTED", "NOT RUN", "OVER BUDGET"}
 
 # What a step gets when the WALL tripped during it: the workers produced nothing
 # at all, so nothing about the code was learned and nothing about the code should
@@ -129,6 +129,18 @@ WALL_NOTE = (
     " That is the environment, not this step - a usage limit, a logged-out CLI, a"
     " model withdrawn, the network gone. NOTHING WAS LEARNED ABOUT THIS STEP and"
     " nothing here is a finding about the code; it is left to be re-run.")
+
+# What a build step gets when `run.budget_usd_per_step` tripped: the worker was
+# cut off mid-work at a turn boundary having spent the entire cap. It does NOT
+# retry. Three attempts against the same brief and the same cap spend the cap
+# three times to be cut off at the same place three times - a $6 cap billing $18
+# to learn nothing - because the cap is not what the worker got wrong. A step
+# that cannot be done inside its budget is a PLANNING failure: the brief asks for
+# too much, or the cap is set below what the work costs, and only a person can
+# say which. So it is blocking as well as re-runnable - a resume picks it up
+# again, but only after somebody has split the step or raised the cap.
+OVER_BUDGET = "OVER BUDGET"
+BUDGET_SUBTYPE = "error_max_budget_usd"
 KINDS = ("build", "review", "reflect", "gate")
 DEFAULT_TIERS = {
     "build": {"model": "opus", "effort": "medium"},        # OM
@@ -1927,6 +1939,11 @@ class Runner:
                 self.log(f"[{step['id']}] {suffix}: worker exit {code} after"
                          f" {elapsed / 60:.1f} min"
                          + (" | " + self.one_line(result) if result else ""))
+            # Read BEFORE the gates and acted on AFTER them, deliberately. A worker
+            # can commit work that passes and only then run out of budget on the
+            # tidying up; that step is a PASS and the cap it hit is nobody's
+            # business. The trip only decides what happens when the gates fail.
+            over_budget = result.get("subtype") == BUDGET_SUBTYPE
             with log_path.open("a", encoding="utf-8", errors="replace") as handle:
                 handle.write("\n=== GATES ===\n")
                 ok, failed, output = self.run_gates(self.all_gates(step), handle)
@@ -1949,6 +1966,11 @@ class Runner:
             elif code == 124:
                 note = (f"worker TIMED OUT after {timeout / 60:.0f} min and was"
                         f" killed; {note}")
+            elif over_budget:
+                spent = result.get("total_cost_usd") or 0.0
+                cap = float(self.run_cfg.get("budget_usd_per_step") or 0)
+                note = (f"worker RAN OUT OF BUDGET (${spent:.2f} against a"
+                        f" ${cap:.2f} cap) and was cut off part-way; {note}")
             if self.args.dry_run:
                 # No worker ran, so there is nothing to undo - and safe_reset would
                 # quarantine the operator's untracked files to get a clean tree,
@@ -1965,6 +1987,17 @@ class Runner:
                         " somebody else's history. See discarded-commits.md.")
                 self.log(f"[{step['id']}] HALTED - {note}")
                 return {"outcome": "HALTED", "attempts": attempt, "sha": self.head(),
+                        "minutes": round((time.time() - started) / 60, 1), "note": note}
+            if over_budget:
+                # STOP. Not another attempt and not a diagnostic: both cost a
+                # fresh cap to be cut off at the same place, and the diagnostic
+                # would be asked to explain a gate failure whose cause is that
+                # the worker never got to finish. See OVER_BUDGET.
+                note += (" - NOT retried: the cap is per invocation, so another"
+                         " attempt would spend it again for the same result."
+                         " Split the step or raise run.budget_usd_per_step.")
+                self.log(f"[{step['id']}] {OVER_BUDGET} - {note}")
+                return {"outcome": OVER_BUDGET, "attempts": attempt, "sha": self.head(),
                         "minutes": round((time.time() - started) / 60, 1), "note": note}
             if attempt == 2 and attempts > 2 and not self.args.dry_run:
                 self.run_diagnostic(step, step_dir, attempt_base)
@@ -2542,7 +2575,10 @@ run:
   hours: 6                       # stop STARTING steps after this many hours
   attempts: 3                    # build attempts before STUCK
   worker_timeout_min: 90
-  budget_usd_per_step: 40        # optional, --max-budget-usd on every worker
+  budget_usd_per_step: 40        # optional, --max-budget-usd on every worker.
+                                 # A build attempt that trips it is OVER BUDGET
+                                 # and is NOT retried - the cap is per worker,
+                                 # so retrying spends it again for the same cut
   on_wall: park                  # when N workers in a row return NOTHING - a
                                  # usage limit, a logged-out CLI, no network -
                                  # the run stops marching through the plan.
@@ -2619,8 +2655,9 @@ quoting all survive, and an edit that would change another step is refused.
       added: [..]  removed: [..] # a reflect that changed the plan
 
 A step is COMPLETE iff its `done.outcome` is outside STUCK, HALTED, FAIL,
-INCONCLUSIVE, SKIPPED, REWORK FAILED and REVERTED BY REVIEW; anything else is
-re-run on resume. `--reset-state` strips every `done:` and commits that.
+INCONCLUSIVE, SKIPPED, REWORK FAILED, REVERTED BY REVIEW, NOT RUN and
+OVER BUDGET; anything else is re-run on resume. `--reset-state` strips every
+`done:` and commits that.
 `--mode` reads the plan alone and prints BLOCKED, PLAN, RUN or REPLACE?.
 """
 
@@ -2653,8 +2690,9 @@ def find_runs(where):
 
 # NEEDS MERGE is blocking but is NOT in RERUN_OUTCOMES: the work exists on a
 # scratch branch, so re-running the step would do it a second time. Only a person
-# can say how it lands.
-BLOCKING_OUTCOMES = ("STUCK", "HALTED", "NEEDS MERGE")
+# can say how it lands. OVER BUDGET is in both, like STUCK: a resume will re-run
+# it, but not until a person has changed something about the step or the cap.
+BLOCKING_OUTCOMES = ("STUCK", "HALTED", "NEEDS MERGE", OVER_BUDGET)
 
 
 def print_mode(where):
@@ -2687,7 +2725,8 @@ def print_mode(where):
         print("BLOCKED")
         print(f"reason: {len(blocked)} step(s) need a person before this plan can go"
               " further - a stuck step has already had every retry the runner has,"
-              " and a halted step means somebody else committed to the branch.")
+              " a halted step means somebody else committed to the branch, and an"
+              " over-budget step wants a smaller brief or a bigger cap.")
         print(f"spec: {spec_path}")
         for step in blocked:
             done = step["done"]
@@ -2761,7 +2800,7 @@ def print_progress(where, which=""):
     for sid, entry in ran:
         flag = " <-- NEEDS YOU" if entry["outcome"] in (
             "STUCK", "HALTED", "FAIL", "INCONCLUSIVE", "REVIEW FAIL",
-            "REVIEW REWORK FAILED", "REFLECT REVERTED") else ""
+            "REVIEW REWORK FAILED", "REFLECT REVERTED", OVER_BUDGET) else ""
         print(f"  {sid:<30} {entry['outcome']:<22} {entry.get('minutes', 0):>5.0f} min"
               f"  {str(entry.get('note', ''))[:70]}{flag}")
     pending = [s["id"] for s in steps if is_resumable(s)]

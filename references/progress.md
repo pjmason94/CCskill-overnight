@@ -27,7 +27,7 @@ prints:
 
 `--run <name>` picks a specific run directory if there are several.
 
-If anything is flagged STUCK or HALTED, say so first and plainly: that plan
+If anything is flagged STUCK, HALTED or OVER BUDGET, say so first and plainly: that plan
 cannot go further until the user resolves it, and `references/blocked.md` is the
 procedure. Do not offer to resume past it.
 

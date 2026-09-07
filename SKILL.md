@@ -25,7 +25,7 @@ It prints one word on the first line, then the reason and the relevant step ids:
 
 | it prints | what it means | do this |
 |---|---|---|
-| **BLOCKED** | a step is STUCK or HALTED | **stop.** Load `references/blocked.md` |
+| **BLOCKED** | a step is STUCK, HALTED or OVER BUDGET | **stop.** Load `references/blocked.md` |
 | **PLAN** | there is no plan file | load `references/planning.md` |
 | **RUN** | the plan has steps still to run | load `references/launching.md` |
 | **REPLACE?** | every step completed | ask whether to replace the plan; if yes, `references/planning.md` |
@@ -35,8 +35,9 @@ It prints one word on the first line, then the reason and the relevant step ids:
 
 **BLOCKED wins over everything.** It is checked before the others and it is a
 hard stop, not a menu: a STUCK step has already had every retry the runner has,
-a HALTED step means somebody else committed to the branch mid-step, and neither
-is a thing this skill can resolve. Do not offer to resume, do not offer to
+a HALTED step means somebody else committed to the branch mid-step, an OVER
+BUDGET step wants a smaller brief or a bigger cap, and none of the three is a
+thing this skill can resolve. Do not offer to resume, do not offer to
 re-plan, do not proceed to another mode. Report it and hand it back.
 
 Two modes are asked for directly rather than inferred, and skip `--mode`:

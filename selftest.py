@@ -156,6 +156,29 @@ steps:
       - cmd: python -m pytest -q tests/test_s1.py
 """
 
+# THE PER-STEP BUDGET. Three attempts on purpose: the defect being guarded is
+# that a cap trip used to be retried, so a $6 cap billed $18 to be cut off in the
+# same place three times. The cap here is the $6 the fake worker reports spending.
+BUDGET_SPEC = """\
+run:
+  name: budget
+  hours: 1
+  attempts: 3
+  worker_timeout_min: 2
+  budget_usd_per_step: 6
+  preamble: overnight/briefs/_preamble.md
+  gates:
+    - {name: suite, cmd: python -m pytest -q tests/test_base.py}
+    - {clean_tree: true}
+steps:
+  - id: s1
+    kind: build
+    title: the brief asks for more than the cap will pay for
+    brief: overnight/briefs/s1.md
+    gates:
+      - cmd: python -m pytest -q tests/test_s1.py
+"""
+
 FOREIGN_SPEC = """\
 run:
   name: foreign
@@ -1280,6 +1303,66 @@ def main():
         # And the watchdog can be turned off outright.
         off, done, wlog = stall_repo("stall-off", "slow-but-alive", "--stall-min", "0")
         check("--stall-min 0 disables the watchdog", "STALLED" not in wlog, wlog[-400:])
+
+        print("21. a worker cut off by the per-step budget is not retried")
+        # `--max-budget-usd` is per INVOCATION, so retrying a cap trip spends the
+        # cap again to be cut off in the same place: three attempts against a $6
+        # cap billed $18 and learned nothing. The cause is not something the
+        # worker got wrong - the brief asks for more than the cap will pay for -
+        # so it is a planning failure and it needs a person, not a retry.
+        def budget_repo(name, behaviour):
+            where = make_repo(root / name)
+            (where / "overnight" / "steps.yaml").write_text(BUDGET_SPEC, encoding="utf-8")
+            sh(where, "git", "add", "-A")
+            sh(where, "git", "commit", "-q", "-m", "budget spec")
+            scen = root / f"scenario-{name}.json"
+            # A SECOND behaviour that passes: pre-fix, attempt 2 ran and the step
+            # ended PASS, so the guard fails against the old runner rather than
+            # merely passing for a different reason.
+            scen.write_text(json.dumps({"s1": [behaviour, "pass"]}), encoding="utf-8")
+            done = run_runner(where, scen)
+            wlog = (where / "overnight" / "runs" / "budget" / "run.log").read_text(
+                encoding="utf-8")
+            return where, done, wlog
+
+        broke, done, wlog = budget_repo("budget", "over-budget")
+        entry = ledger(broke).get("s1", {})
+        check("a budget trip gets its own outcome, not STUCK",
+              entry.get("outcome") == "OVER BUDGET", str(entry))
+        check("...after ONE attempt, not three",
+              entry.get("attempts") == 1, str(entry))
+        check("...so no second worker is ever spawned",
+              not (broke / "overnight" / "runs" / "budget" / "s1" / "attempt-2.log").exists())
+        check("...and no diagnostic is run over it either",
+              not (broke / "overnight" / "runs" / "budget" / "s1" / "diagnostic.log").exists())
+        check("the note names the spend against the cap",
+              "$6.02 against a $6.00 cap" in str(entry.get("note")), str(entry.get("note")))
+        check("...and says what a person is being asked to change",
+              "budget_usd_per_step" in str(entry.get("note")), str(entry.get("note")))
+        # It reported a cost and turns, so it is a worker that answered. Reading it
+        # as barren would park the run on a spending limit that is the run's own.
+        check("a budget trip is never counted as a barren worker",
+              "returned NOTHING" not in wlog, wlog[-600:])
+        # Half-done work: the fixture writes the test file and never commits it.
+        check("the half-finished tree is cleaned up",
+              not sh(broke, "git", "status", "--porcelain").stdout.strip(),
+              sh(broke, "git", "status", "--porcelain").stdout)
+        check("--mode reports the plan as BLOCKED - it needs a person",
+              subprocess.run([sys.executable, str(RUNNER), "--mode", str(broke)],
+                             capture_output=True, text=True).stdout.strip().startswith("BLOCKED"))
+        check("...and it is still resumable once they have changed something",
+              is_resumable(yaml.safe_load(spec_text(broke))["steps"][0]))
+
+        # THE OTHER HALF: the cap tripping AFTER the work is committed and the
+        # gates pass is a PASS. The gates are the arbiter, not the exit code -
+        # otherwise a step whose work is on the branch gets thrown away for
+        # running out of money on its way out.
+        late, done, wlog = budget_repo("budget-late", "over-budget-late")
+        entry = ledger(late).get("s1", {})
+        check("a cap trip after the gates pass is still a PASS",
+              entry.get("outcome") == "PASS", str(entry))
+        check("...on the first attempt, with nothing redone",
+              entry.get("attempts") == 1, str(entry))
 
         if failures:
             print("\n--- run.log tail ---")

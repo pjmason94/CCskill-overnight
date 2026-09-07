@@ -7,6 +7,30 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Added
 
+- **A step that runs out of budget now stops instead of buying the same failure
+  three times.** `run.budget_usd_per_step` has always been passed to each worker
+  as `--max-budget-usd`, but a trip was just another failed attempt: the cap is
+  per *invocation*, so a $6 cap could bill $18 over three attempts and be cut off
+  in the same place each time. A build attempt whose worker ends with
+  `subtype: error_max_budget_usd` is now recorded as the new outcome **OVER
+  BUDGET** and is not retried, and no diagnostic is run over it either - a
+  diagnostic would be asked to explain a gate failure whose only cause is that
+  the worker never got to finish.
+
+  It is treated as a **planning** failure, not a finding about the code: either
+  the brief asks for more than the cap will pay for, or the cap is set below what
+  the work costs, and only a person can say which. So `OVER BUDGET` is blocking
+  (`--mode` prints `BLOCKED`, and the summary flags the step `<-- NEEDS YOU`) as
+  well as resumable, the same pair `STUCK` and `HALTED` have: a resume picks it
+  straight back up, but only once somebody has split the step or raised the cap.
+  The note names both figures - `worker RAN OUT OF BUDGET ($6.02 against a $6.00
+  cap)` - so the morning can see how far off the cap was without opening a log.
+
+  **The gates remain the arbiter.** A worker that commits passing work and only
+  then runs out of money on the tidying up is still a `PASS`: the trip is read
+  before the gates run and acted on only if they fail, so work that is on the
+  branch is never thrown away for an exit code.
+
 - **A stall watchdog: a worker that has stopped writing is killed, not paid for
   to the timeout.** `run.stall_min` / `--stall-min`, default **10 minutes**, 0 to
   disable. On 2026-09-07 two workers went silent with their log frozen and each
