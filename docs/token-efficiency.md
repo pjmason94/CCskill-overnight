@@ -6,6 +6,15 @@ against twenty-two interactive Claude Code sessions from the same three days as
 the control. `tools/tally.py` produced every number here from the logs the
 runner and the harness already write; nothing was estimated.
 
+> **Note added 2026-09-07.** `tools/tally.py` used to read usage off the *last*
+> `result` event in a log. A worker that backgrounds a task is woken when the task
+> finishes and appends a second session to the same log, so that read costed the
+> tail alone - on FinKit `5b-recognise` attempt-2, $0.54 against a real $14.53.
+> It now sums usage over every session. **The figures below are unaffected:** of
+> the 144 real worker logs on this machine, exactly one holds more than one result
+> event, and it was run the day *after* this sample was taken. Nothing here was
+> re-measured because nothing here needed to be.
+
 The objective this serves is in `CLAUDE.md`: an unattended run must not be
 significantly more token-hungry than doing the same work interactively. Some
 overhead is the price of nobody being awake. 2x is not acceptable.

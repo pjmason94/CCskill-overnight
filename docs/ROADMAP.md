@@ -13,7 +13,19 @@ What has been built is listed at the bottom. Items 1 and 2 have designs under
 item 4's honest answer - "unverified off Windows" - is now stated in the README
 rather than left implied.
 
-## 12. A stall watchdog: a silent worker must not be paid for to the timeout
+## 12. A stall watchdog - BUILT 2026-09-07
+
+**Done.** `run.stall_min` / `--stall-min`, default 10 minutes, 0 to disable. The
+discriminator turned out to be cleaner than this entry assumed: both slow paths
+keep the log growing (a `tool_progress` heartbeat every ~30s during a Bash call,
+`thinking_tokens` records during a long generation), so a log that does not grow
+at all really does mean wedged, and no gate-aware clock was needed - the watchdog
+lives in the worker's heartbeat loop, which only runs while a worker does. The
+threshold was set from measurement: the largest silence a working worker ever
+produced across 25 real logs was 291s. A stall is a spent attempt and the step
+retries; the note says `worker STALLED`. Original entry follows.
+
+## 12a. A stall watchdog: a silent worker must not be paid for to the timeout
 
 **Measured, 2026-09-07.** Twice in one night a worker went silent - the process
 alive, the log file frozen at a fixed size - and each burned the full 90-minute

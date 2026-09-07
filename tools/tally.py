@@ -79,7 +79,7 @@ def tally(path):
     bash_kind = {}
     largest = []                     # (bytes, tool, hint)
     hints = {}
-    reported = None
+    results = []                     # every `result` event, in order
     for line in text.splitlines():
         if not line.startswith("{"):
             continue
@@ -131,12 +131,25 @@ def tally(path):
                 result_bytes[name] += size
                 largest.append((size, name, hints.get(tid, "")))
         elif kind == "result":
-            reported = event
+            results.append(event)
+    reported = results[-1] if results else None
     usage = Counter()
     for mid in order:
         usage.update(calls[mid])
-    if reported and isinstance(reported.get("usage"), dict):
-        usage = Counter({k: int(reported["usage"].get(k) or 0) for k in USAGE_KEYS})
+    # EVERY result event, not the last one. A worker that backgrounds a task gets
+    # woken when the task finishes, and a second session is appended to the same
+    # log - so the last result's `usage` covers only that second session. Reading
+    # it alone costed FinKit `5b-recognise` as its 4-turn tail instead of its 123
+    # turns: $0.54 against a real $14.53, a 27x under-count, and every figure in
+    # docs/token-efficiency.md derived from a log like it was wrong the same way.
+    # `usage` is per-session and so sums; `total_cost_usd` is cumulative over the
+    # process and so does NOT - the last one already carries the whole spend.
+    totals = Counter()
+    for event in results:
+        if isinstance(event.get("usage"), dict):
+            totals.update({k: int(event["usage"].get(k) or 0) for k in USAGE_KEYS})
+    if totals:
+        usage = totals
     contexts = [calls[m]["input_tokens"] + calls[m]["cache_creation_input_tokens"]
                 + calls[m]["cache_read_input_tokens"] for m in order]
     first = calls[order[0]] if order else {}

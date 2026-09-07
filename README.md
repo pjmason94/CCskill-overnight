@@ -487,6 +487,7 @@ where the run directory is and that the tree is off limits.
 | `hours` | 6 | stop STARTING steps after this many hours; `--hours` overrides |
 | `attempts` | 3 | build attempts before STUCK |
 | `worker_timeout_min` | 90 | kill a build worker after this many minutes |
+| `stall_min` | 10 | kill a worker whose log has not grown for this many minutes (0 disables) |
 | `review_timeout_min` | 30 | the same for a review worker |
 | `reflect_timeout_min` | 30 | the same for a reflect worker |
 | `diagnostic_timeout_min` | 20 | the same for the diagnostic pass |
@@ -583,6 +584,7 @@ step id.
 | `--on-wall park\|stop` | overrides `run.on_wall`: what to do when the workers stop answering entirely |
 | `--wall-threshold <n>` | overrides `run.wall_threshold` |
 | `--park-poll-min <n>` | overrides `run.park_poll_min` |
+| `--stall-min <n>` | overrides `run.stall_min`; 0 disables the stall watchdog |
 | `--list` | print every step, its kind, its recorded outcome, its title; exit |
 | `--print-brief <id>` | print the composed brief a build or reflect worker would receive; exit |
 | `--format` | print the steps file reference form; exit |

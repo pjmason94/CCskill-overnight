@@ -34,6 +34,14 @@ Behaviours:
                 The key for a park probe is `_probe`, so a scenario can say
                 ["wall", "wall", "probe-ok"] to make the account come back.
   probe-ok      answer a park probe normally (the default for kind `probe`)
+  stall         WEDGED: alive, emitting nothing at all, forever - what a hung
+                PreToolUse hook does to a worker. The stall watchdog must kill it
+  slow-but-alive  legitimately slow: silent work, but a tool_progress heartbeat
+                every so often, so the log keeps growing. Must NOT be killed
+  pass-rewoken  pass, but emit TWO result events the way a worker does when a
+                backgrounded task wakes it after its first session ended: turns
+                are per-session and must be summed, cost is cumulative over the
+                process and must not be
   pass-unicode  pass, but report a summary the console may not be able to print
                 (a `<=`, an accent, a tick), which is what a real worker writes
                 and what killed a live run under Task Scheduler's cp1252 console
@@ -57,6 +65,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -166,6 +175,66 @@ def main():
             git_as_stranger(main, "add", "-A")
         if main_meddle != "stray":
             git_as_stranger(main, "commit", "-q", "-m", "a commit from another window")
+    if behaviour == "stall":
+        # WEDGED: alive, writing nothing, forever. What a worker looks like when a
+        # PreToolUse hook never returns - the tool call never completes, so no
+        # tool_progress heartbeat and no thinking_tokens record is ever emitted.
+        # Twice on 2026-09-07 this burned the full 90-minute worker_timeout_min.
+        time.sleep(3600)
+        return result("never reached")
+    if behaviour == "slow-but-alive":
+        # THE CASE THE WATCHDOG MUST NOT KILL: a legitimately slow step. It writes
+        # nothing a human would call output, but Claude Code emits a tool_progress
+        # heartbeat about every 30 seconds while a Bash call runs, and that is what
+        # keeps the log growing. Same shape here: silent work, ticking log.
+        for elapsed in range(10, 130, 10):
+            emit({"type": "tool_progress", "tool_name": "Bash", "heartbeat": True,
+                  "elapsed_time_seconds": elapsed})
+            time.sleep(0.4)
+        # Then it does the work and commits, like any passing worker. The point of
+        # the case is that a slow step SUCCEEDS on its first attempt - if it fell
+        # through to a gate failure the retry would mask a watchdog that had
+        # wrongly killed it.
+        behaviour = "pass"
+    if behaviour == "pass-rewoken":
+        # A worker that BACKGROUNDS a task: its `result` fires, the task then
+        # finishes and wakes the process, and a second session is appended to the
+        # same stream. One process, one log, TWO results - and their fields do not
+        # accumulate alike. The numbers below are the real ones measured off
+        # FinKit `5b-recognise` attempt-2 on 2026-09-07: per-session turns
+        # (119 then 4) but a CUMULATIVE cost (13.99 then 14.53, not 0.54).
+        tests = repo / "tests"
+        tests.mkdir(exist_ok=True)
+        path = tests / f"test_{safe}.py"
+        path.write_text(f"def test_{safe}():\n    assert True  # built\n", encoding="utf-8")
+        git(repo, "add", str(path.relative_to(repo).as_posix()))
+        git(repo, "commit", "-q", "-m", f"fake: {key} built")
+        # One assistant record per session, because a real log carries one per
+        # streamed API call and tally.py identifies a call by its message id.
+        # Their usage is a single call's worth; the result events carry the
+        # session totals, which is exactly how a real worker's log is shaped.
+        emit({"type": "assistant", "message": {
+            "id": "msg_session_1", "model": "claude-opus-5",
+            "content": [{"type": "text", "text": "first session"}],
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 1744,
+                      "cache_read_input_tokens": 154157, "output_tokens": 920}}})
+        emit({"type": "result", "subtype": "success", "is_error": False,
+              "num_turns": 119, "total_cost_usd": 13.9880725, "model": "claude-opus-5",
+              "duration_ms": 2807387, "result": f"{key}: first session",
+              "usage": {"input_tokens": 230, "cache_creation_input_tokens": 207519,
+                        "cache_read_input_tokens": 18344715, "output_tokens": 109575}})
+        emit({"type": "system", "subtype": "init", "session_id": "same-process"})
+        emit({"type": "assistant", "message": {
+            "id": "msg_session_2", "model": "claude-opus-5",
+            "content": [{"type": "text", "text": "woken"}],
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 898,
+                      "cache_read_input_tokens": 222336, "output_tokens": 615}}})
+        emit({"type": "result", "subtype": "success", "is_error": False,
+              "num_turns": 4, "total_cost_usd": 14.5301945, "model": "claude-opus-5",
+              "duration_ms": 203050, "result": f"{key}: woken by a background task",
+              "usage": {"input_tokens": 8, "cache_creation_input_tokens": 3591,
+                        "cache_read_input_tokens": 889344, "output_tokens": 2460}})
+        return
     if behaviour in ("pass", "fail-dirty", "pass-unicode"):
         tests = repo / "tests"
         tests.mkdir(exist_ok=True)

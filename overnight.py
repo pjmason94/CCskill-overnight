@@ -158,7 +158,19 @@ TOOL_USAGE_NOTE = (
     " around the hits rather than reading a file to find them; on a large file"
     " Read the range you need with offset and limit, not the whole thing; do not"
     " re-read a file you have already read or just edited; and pipe a noisy"
-    " command through a filter instead of dumping its output.\n")
+    " command through a filter instead of dumping its output.\n"
+    "Keep tool commands SHORT-RUNNING, and scope them to the question you are"
+    " asking. Run the narrowest thing that can fail: a single test node before a"
+    " test file, a test file before the suite. You never need to run the whole"
+    " suite to show you are finished - this run's gates do that for you after you"
+    " stop, and a green suite you ran yourself proves nothing the gate will not"
+    " re-prove. The same goes for searching and building: a scoped path rather"
+    " than the project root, an incremental build rather than a clean one. If a"
+    " command has already taken more than about two minutes, do not run it again"
+    " unchanged - narrow it. Waiting is not free: it is dead time against this"
+    " step's clock, and a command that runs for several minutes can outlive the"
+    " cache your context is served from, so the turn after it re-reads everything"
+    " you have accumulated at full price instead of a tenth of it.\n")
 
 REVIEW_SCHEMA = {
     "type": "object",
@@ -685,6 +697,19 @@ class Runner:
                                   or self.run_cfg.get("wall_threshold", 3))
         self.park_poll_min = float(self.args.park_poll_min
                                    or self.run_cfg.get("park_poll_min", 30))
+        # A worker that has written NOTHING for this long is wedged, not busy.
+        # Both slow paths keep writing: a Bash call over ~30s emits a
+        # `tool_progress` heartbeat every 30s, and a long generation emits
+        # `thinking_tokens` records throughout - so silence means neither is
+        # happening. The default is measured, not guessed: over 25 real worker
+        # logs the largest silence a WORKING worker ever produced was 291s
+        # (4.9 min) and the median per-log maximum was 81s, so 10 minutes is
+        # about twice the worst case ever seen. `worker_timeout_min` cannot do
+        # this job - it has to be set for the slowest legitimate step, so it can
+        # never catch a stall early. 0 turns the watchdog off.
+        self.stall_min = float(self.args.stall_min
+                               if self.args.stall_min is not None
+                               else self.run_cfg.get("stall_min", 10))
         self.barren = 0            # consecutive worker invocations that produced nothing
         self.parked_seconds = 0.0  # for the summary: how much of the night went to waiting
         self.probes = 0
@@ -1397,6 +1422,7 @@ class Runner:
                 handle.write(f"\n*** could not write the brief: {exc}\n")
             next_beat = started + 60
             beats = 0
+            last_size, last_growth = 0, started
             while True:
                 code = process.poll()
                 if code is not None:
@@ -1407,9 +1433,22 @@ class Runner:
                     handle.write(f"\n\n*** KILLED after {timeout}s\n")
                     code = 124
                     break
+                # Sampled every pass, not once a beat: the beat is a minute apart,
+                # and detection must not be quantised to it.
+                handle.flush()
+                size = log_path.stat().st_size if log_path.exists() else 0
+                if size > last_size:
+                    last_size, last_growth = size, now
+                if self.stall_min and now - last_growth > self.stall_min * 60:
+                    kill_tree(process)
+                    handle.write(f"\n\n*** KILLED: STALLED - the log had not grown"
+                                 f" for {self.stall_min} min\n")
+                    self.log(f"{tag} STALLED - no output at all for"
+                             f" {self.stall_min} min. Killing it; the attempt is"
+                             f" spent and the retry is the fix.")
+                    code = 125
+                    break
                 if now >= next_beat:
-                    handle.flush()
-                    size = log_path.stat().st_size if log_path.exists() else 0
                     beats += 1
                     # Every beat to run.log, every tenth to stdout. A watcher gets
                     # a line every ten minutes instead of every one, and the file
@@ -1437,12 +1476,15 @@ class Runner:
         worker that ran, spent money and then hit the wall did real work, and the
         wall it hit is the next invocation's business, not this one's.
 
-        124 is excluded because it is the runner's OWN timeout kill. A worker that
-        had to be killed is hung, not absent, and parking for half an hour would
-        neither diagnose it nor fix it.
+        124 and 125 are excluded because they are the runner's OWN kills - the
+        timeout and the stall watchdog. A worker that had to be killed is hung, not
+        absent, and parking for half an hour would neither diagnose it nor fix it.
+        Excluding 125 also stops three stalls in a row from being read as a usage
+        wall: a stalled worker leaves no result event and exits non-zero, which is
+        the exact shape of a barren one.
         """
         did_something = bool(result.get("total_cost_usd") or result.get("num_turns"))
-        if code == 0 or code == 124 or did_something:
+        if code == 0 or code in (124, 125) or did_something:
             if self.barren:
                 self.log(f"{tag} the worker answered; the barren count goes back to 0")
             self.barren = 0
@@ -1530,9 +1572,32 @@ class Runner:
 
     @staticmethod
     def result_of(log_path):
-        """The final `result` event of a stream-json log, or {}."""
-        text = read_text(log_path)
-        for line in reversed(text.splitlines()):
+        """How the worker ended, with its cost and turns summed over the WHOLE log.
+
+        A worker's stdout is not always one session. If it backgrounds a task, its
+        `result` fires, the task finishes, the completion wakes the process, and a
+        fresh `init` and a second session are appended to the same stream - the
+        runner sees one process and one log, but the log holds two results.
+
+        Reading only the last one, as this did, reported the re-woken session's
+        figures as the step's: FinKit `5b-recognise` on 2026-09-07 was logged
+        `turns=4 $14.53` for a step that actually took 119 turns over two sessions.
+        Every per-step turn count in every summary was wrong whenever a worker
+        backgrounded anything.
+
+        The fields do NOT all accumulate the same way, and this was measured on
+        that log rather than assumed. Session 2 there did a twentieth of session
+        1's work (889k cache reads against 18.3M) and yet reported a HIGHER
+        `total_cost_usd` - because cost is cumulative over the process, while
+        `usage`, `num_turns` and `duration_ms` are per-session. So summing cost
+        would have double-counted the step to $28.52. It is taken from the last
+        result, which already carries the whole process's spend; turns and
+        duration are summed; and the terminal state (subtype, is_error, the
+        worker's closing text) comes from the last result too, because that is how
+        the process actually ended.
+        """
+        results = []
+        for line in read_text(log_path).splitlines():
             if not line.startswith("{"):
                 continue
             try:
@@ -1540,8 +1605,17 @@ class Runner:
             except ValueError:
                 continue
             if isinstance(payload, dict) and payload.get("type") == "result":
-                return payload
-        return {}
+                results.append(payload)
+        if not results:
+            return {}
+        merged = dict(results[-1])
+        if len(results) > 1:
+            for field in ("num_turns", "duration_ms"):
+                total = sum(r.get(field) or 0 for r in results)
+                if total:
+                    merged[field] = total
+            merged["sessions"] = len(results)
+        return merged
 
     @staticmethod
     def one_line(result):
@@ -1865,6 +1939,16 @@ class Runner:
                         "minutes": round((time.time() - started) / 60, 1),
                         "note": note, "summary": (result.get("result") or "")[:2000]}
             note = f"failed the gate: {failed}"
+            # WHY the attempt failed, not just that a gate did. A worker the runner
+            # had to kill never finished its work, so its gate failure says nothing
+            # about the code - and the morning must be able to tell that apart from
+            # a worker that tried and got it wrong.
+            if code == 125:
+                note = (f"worker STALLED - silent for {self.stall_min:.0f} min and"
+                        f" killed; {note}")
+            elif code == 124:
+                note = (f"worker TIMED OUT after {timeout / 60:.0f} min and was"
+                        f" killed; {note}")
             if self.args.dry_run:
                 # No worker ran, so there is nothing to undo - and safe_reset would
                 # quarantine the operator's untracked files to get a clean tree,
@@ -2468,6 +2552,7 @@ run:
                                  # untested steps are left PENDING, never STUCK.
   wall_threshold: 3              # barren workers in a row before that happens
   park_poll_min: 30              # minutes between probes while parked
+  stall_min: 10                  # kill a worker silent this long (0 = off)
   isolation: worktree            # THE DEFAULT. Each build step gets its own git
                                  # worktree on a scratch branch, integrated once
                                  # its gates pass; the operator's tree is never
@@ -2741,6 +2826,9 @@ def main():
                              " is called (default 3)")
     parser.add_argument("--park-poll-min", type=float, default=0,
                         help="minutes between probes while parked (default 30)")
+    parser.add_argument("--stall-min", type=float, default=None,
+                        help="kill a worker whose log has not grown for this many"
+                             " minutes (default 10, 0 to disable)")
     parser.add_argument("--from", dest="from_step", default="")
     parser.add_argument("--only", default="", help="comma-separated step ids")
     parser.add_argument("--rerun", action="store_true", help="re-run steps already PASSed in state")

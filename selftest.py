@@ -1188,6 +1188,99 @@ def main():
               ledger(crashed).get("s1", {}).get("outcome") == "PASS",
               str(ledger(crashed).get("s1")))
 
+        print("19. a worker woken by its own background task is counted once, in full")
+        # FinKit `5b-recognise`, 2026-09-07: logged `turns=4 $14.53` for a step
+        # that really took 123 turns over two sessions. The runner read the LAST
+        # result event, which belonged to the 4-turn tail. tools/tally.py had the
+        # same bug from the other side and costed the tail's usage alone - $0.54
+        # against a real $14.53, a 27x under-count, which is worse than a crash
+        # because nobody goes looking for a number that merely looks small.
+        woke = make_repo(root / "rewoken")
+        (woke / "overnight" / "steps.yaml").write_text(DEFAULT_ISO_SPEC, encoding="utf-8")
+        sh(woke, "git", "add", "-A")
+        sh(woke, "git", "commit", "-q", "-m", "rewoken spec")
+        wscen = root / "scenario-rewoken.json"
+        wscen.write_text(json.dumps({"s1": ["pass-rewoken"]}), encoding="utf-8")
+        done = run_runner(woke, wscen)
+        wlog = (woke / "overnight" / "runs" / "default-iso" / "run.log").read_text(
+            encoding="utf-8")
+        check("turns are SUMMED over every session in the log",
+              "turns=123" in wlog, wlog[-600:])
+        check("...and not read off the last one alone",
+              "turns=4 " not in wlog and "turns=119" not in wlog, wlog[-600:])
+        # Cost is cumulative over the process, so summing would double it to
+        # $28.52. Measured on the real log before this fixture was written.
+        check("cost is NOT double-counted: the last result carries the whole spend",
+              "$14.53" in wlog and "$28.52" not in wlog, wlog[-600:])
+        check("the step itself still passes",
+              ledger(woke).get("s1", {}).get("outcome") == "PASS",
+              str(ledger(woke).get("s1")))
+        tally = subprocess.run(
+            [sys.executable, "-u", str(HERE / "tools" / "tally.py"),
+             str(woke / "overnight" / "runs" / "default-iso")],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        # 18,344,715 + 889,344 cache-read tokens. Asserted as TOKENS, not dollars,
+        # so the guard cannot be moved by a price change; the tail alone is 889k.
+        check("tally sums every session's usage, not the last one's",
+              "19234k" in tally.stdout, tally.stdout[:600])
+
+        print("20. a stalled worker is killed; a merely slow one is not")
+        # 2026-09-07: two workers went silent with their log size frozen and each
+        # burned the full 90-minute worker_timeout_min before exit 124. The retry
+        # then passed in 27 and 47 minutes - so the retry was always the fix, and
+        # the only cost was the waiting. worker_timeout_min cannot catch this: it
+        # has to be set for the slowest legitimate step.
+        #
+        # The threshold is measured, not guessed. Across 25 real worker logs the
+        # largest silence a WORKING worker produced was 291s; the median per-log
+        # maximum was 81s. Both slow paths keep the log growing - a Bash call over
+        # ~30s emits a tool_progress heartbeat, a long generation emits
+        # thinking_tokens - so silence really does mean wedged.
+        def stall_repo(name, behaviour, *extra):
+            where = make_repo(root / name)
+            (where / "overnight" / "steps.yaml").write_text(DEFAULT_ISO_SPEC,
+                                                            encoding="utf-8")
+            sh(where, "git", "add", "-A")
+            sh(where, "git", "commit", "-q", "-m", "stall spec")
+            scen = root / f"scenario-{name}.json"
+            scen.write_text(json.dumps({"s1": [behaviour, "pass"]}), encoding="utf-8")
+            done = run_runner(where, scen, *extra)
+            wlog = (where / "overnight" / "runs" / "default-iso" / "run.log").read_text(
+                encoding="utf-8")
+            return where, done, wlog
+
+        # 0.05 min = 3s, so the case runs in seconds rather than ten minutes.
+        wedged, done, wlog = stall_repo("stalled", "stall", "--stall-min", "0.05")
+        check("a worker that writes nothing is killed", "STALLED" in wlog, wlog[-700:])
+        check("...and is not left to burn the whole worker timeout",
+              "KILLED after" not in wlog, wlog[-500:])
+        check("...and the attempt is spent, not the run",
+              ledger(wedged).get("s1", {}).get("outcome") == "PASS",
+              str(ledger(wedged).get("s1")))
+        check("...so the retry - which is the fix - actually ran",
+              "attempt-2" in wlog, wlog[-500:])
+        # A stalled worker exits non-zero with no result event, which is exactly
+        # the shape of a barren one. It must not be read as the usage wall.
+        # Not "PARK not in the log" - the startup banner names the wall policy on
+        # every run, so that string is there before anything has happened.
+        check("a stall is never counted as a barren worker",
+              "returned NOTHING" not in wlog, wlog[-600:])
+        check("...so the run never parks on it",
+              "PARKED" not in wlog and "waits here" not in wlog, wlog[-600:])
+
+        # THE OTHER HALF, and the one that matters more: a slow step must survive.
+        slow, done, wlog = stall_repo("slow", "slow-but-alive", "--stall-min", "0.05")
+        check("a slow worker that keeps writing is NOT killed",
+              "STALLED" not in wlog, wlog[-700:])
+        check("...and its step passes on the first attempt",
+              ledger(slow).get("s1", {}).get("outcome") == "PASS"
+              and ledger(slow).get("s1", {}).get("attempts") == 1,
+              str(ledger(slow).get("s1")))
+
+        # And the watchdog can be turned off outright.
+        off, done, wlog = stall_repo("stall-off", "slow-but-alive", "--stall-min", "0")
+        check("--stall-min 0 disables the watchdog", "STALLED" not in wlog, wlog[-400:])
+
         if failures:
             print("\n--- run.log tail ---")
             print(log[-4000:])

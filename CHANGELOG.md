@@ -5,7 +5,82 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **A stall watchdog: a worker that has stopped writing is killed, not paid for
+  to the timeout.** `run.stall_min` / `--stall-min`, default **10 minutes**, 0 to
+  disable. On 2026-09-07 two workers went silent with their log frozen and each
+  burned the full 90-minute `worker_timeout_min` before `exit 124`; the retries
+  then passed in 27 and 47 minutes, so the retry was always the fix and the only
+  cost was the waiting - about two and a half hours of one night.
+
+  `worker_timeout_min` cannot do this job. It has to be set for the slowest step
+  the run legitimately contains, so it can never catch a stall early: it is a
+  backstop against a runaway, not a detector of a stopped process.
+
+  **A slow worker is not a stalled one, and the runner can tell.** Both slow paths
+  keep the log growing - a Bash call lasting over ~30s emits a `tool_progress`
+  heartbeat every 30s, and a long generation emits `thinking_tokens` records
+  throughout - so a log that does not grow at all means neither is happening. The
+  default is measured rather than guessed: across 25 real worker logs the largest
+  silence a *working* worker ever produced was **291 seconds**, with a median
+  per-log maximum of 81s, so 10 minutes is about twice the worst case observed.
+  The log size is now sampled every couple of seconds rather than once a minute,
+  so detection is not quantised to the heartbeat.
+
+  A stall is recorded as a spent attempt and the step is retried, because that is
+  what actually fixed it in the field. The attempt note says `worker STALLED`
+  (and, for the timeout, `worker TIMED OUT`) so the morning can tell a worker that
+  never ran from one that tried and got it wrong. Exit code 125 is excluded from
+  the barren count alongside 124: a stalled worker exits non-zero with no result
+  event, which is exactly the shape of a barren one, and three stalls must not be
+  read as a usage wall.
+
+  The watchdog cannot fire during a gate - it lives in the worker's own heartbeat
+  loop, which only runs while a worker does.
+
+### Changed
+
+- **Workers are now told to keep tool commands short-running and scoped**, not
+  just to keep their results small. The note already covered output size; it said
+  nothing about how long a command takes. Measured on FinKit `5b-recognise`:
+  **1,411 seconds - 23.5 minutes of a 47-minute step - was spent inside tool
+  calls**, roughly half its wall clock. Workers are now told to run the narrowest
+  thing that can fail (a test node before a file, a file before the suite), that
+  they never need to run the whole suite to prove they are done because the run's
+  gates do exactly that afterwards, and not to repeat unchanged a command that has
+  already taken more than about two minutes.
+
+  This is aimed at the wall clock rather than the bill - a tool call's *duration*
+  costs no tokens - with one exception that does cost: a command that outlives the
+  prompt cache makes the turn after it re-read the whole accumulated context at
+  full price instead of a tenth of it.
+
+  Deliberately a standing rule and not a per-call estimate. An estimate asks for a
+  prediction the model cannot make reliably, spends output tokens on every call,
+  and then sits in the context being re-read for the rest of the step.
+
 ### Fixed
+
+- **A worker woken by its own background task is now counted once, in full.** A
+  worker that backgrounds a command gets woken when it finishes, and a second
+  session is appended to the same log: one process, one log, **two `result`
+  events**. Both the runner and `tools/tally.py` read only the last one. FinKit
+  `5b-recognise` was therefore logged as `turns=4 $14.53` for a step that really
+  took 123 turns, and `tally.py` costed its 4-turn tail alone - **$0.54 against a
+  real $14.53**, a 27x under-count, which is worse than a crash because nobody
+  goes looking for a number that merely looks small.
+
+  The fields do not accumulate alike, and this was measured rather than assumed:
+  `usage`, `num_turns` and `duration_ms` are **per-session** and are now summed;
+  `total_cost_usd` is **cumulative over the process** and is taken from the last
+  result, because summing it would have double-counted that step to $28.52.
+  `tally.py` now reconciles exactly - $14.53 computed against $14.53 reported,
+  where it previously printed $0.54.
+
+  `docs/token-efficiency.md` is unaffected and was not re-measured: of the 144
+  real worker logs on this machine only one holds more than one result event, and
+  it postdates that sample. A note in the file says so.
 
 - **A leftover worktree no longer costs a step its night.** `prune_worktrees`
   compared `str(path)` against the text of `git worktree list --porcelain`. That
