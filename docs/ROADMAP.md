@@ -13,6 +13,39 @@ What has been built is listed at the bottom. Items 1 and 2 have designs under
 item 4's honest answer - "unverified off Windows" - is now stated in the README
 rather than left implied.
 
+## 12. A stall watchdog: a silent worker must not be paid for to the timeout
+
+**Measured, 2026-09-07.** Twice in one night a worker went silent - the process
+alive, the log file frozen at a fixed size - and each burned the full 90-minute
+`worker_timeout_min` before `exit 124` killed it. FinKit `5b-liveness` attempt-1
+sat frozen at 958 KB for 60 minutes and then PASSED on attempt-2 in 27 minutes;
+`5b-recognise` attempt-1 froze at 351 KB and cost its step 90 minutes, after
+which attempt-2 finished in 47. Roughly two and a half hours of a run's wall clock
+went to waiting on two processes that had already stopped working.
+
+`timeout_min` cannot be the answer. It has to be set for the slowest step the run
+legitimately contains - and `5b-recognise` took 47 real minutes, so 90 is not
+generous - which means it can never catch a stall early. It is a backstop against
+a runaway, not a detector of a stopped one.
+
+The signal already exists and nothing acts on it: the heartbeat measures the log
+file's size every minute and prints it. A worker that is working writes
+continuously (that step wrote 2.6 MB across 119 turns, and no minute of it was
+flat for long). So: if the log has not grown for `stall_min` (a default in the
+region of 10-15 minutes, and it must be a spec key because a step that runs one
+very long gate is legitimately quiet), kill the worker and treat it as a failed
+attempt - the retry is the fix, and on both of these it was.
+
+Two things to get right. A quiet gate is not a stall: the runner knows when it is
+running a gate rather than a worker, and the clock must not run then. And the
+outcome must be distinguishable in the ledger - a `STALLED` attempt note, so the
+morning can tell "the worker stopped answering" from "the worker tried and the
+gate failed", which are different problems with different fixes.
+
+Cheap: one comparison in the existing heartbeat loop, the kill path is the one
+`timeout` already uses, and the self-test fixture is a fake worker that prints
+nothing and sleeps.
+
 ## 11. `--until`, not `--hours`: the operator's constraint is a deadline
 
 **The metric is wrong.** `--hours` asks for a duration. What an operator actually

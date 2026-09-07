@@ -27,9 +27,13 @@ degrade (warn once, skip clean_tree, skip review) rather than refuse; a THIRD
 PARTY committing to the branch mid-step, which must be refused and never
 destroyed; the LEDGER - `done:` spliced into the plan file without disturbing a
 comment or another step - and `--reset-state` stripping it; `--mode`, which must
-say BLOCKED for a stuck plan and never anything else; and the USAGE WALL, where
-the workers stop answering entirely and the run must park (or stop) rather than
-march through the plan marking untested steps STUCK.
+say BLOCKED for a stuck plan and never anything else; the USAGE WALL, where the
+workers stop answering entirely and the run must park (or stop) rather than march
+through the plan marking untested steps STUCK; and the WORKTREES AN EARLIER RUN
+LEFT BEHIND - a registered one that must be handed to git rather than torn off
+the filesystem, a dangling registration that must not stall the step, a genuine
+orphan that must still go, and a crashed run's commits on a scratch branch, which
+are tagged before `worktree add -B` moves the branch off them.
 
 Run this before every overnight launch. A runner path that has not been exercised
 is a path that will be exercised for the first time at 03:00.
@@ -1085,6 +1089,104 @@ def main():
             encoding="utf-8")
         check("...and run.log keeps the characters the console could not show",
               "\u2264" in ulog and "\u00e9" in ulog, ulog[-300:])
+
+        print("17. a worktree an earlier run left behind")
+        # THE FIELD DEFECT of 2026-09-07. `git worktree list --porcelain` prints
+        # FORWARD slashes; `str(path)` on Windows gives BACKslashes, so the
+        # membership test in prune_worktrees was ALWAYS true and it deleted the
+        # directory of every REGISTERED worktree under its root. `git worktree
+        # prune` had already run by then, so the registration was left dangling
+        # and the next `worktree add -B` failed "already used by worktree": the
+        # step went STUCK with zero attempts, having read no code and spent
+        # nothing. It cost a live run its night's work.
+        def leftover(name, then=None):
+            where = make_repo(root / name)
+            (where / "overnight" / "steps.yaml").write_text(ISOLATED_SPEC, encoding="utf-8")
+            sh(where, "git", "add", "-A")
+            sh(where, "git", "commit", "-q", "-m", "isolated spec")
+            wroot = where.parent / f"{where.name}.overnight-worktrees" / "isolated"
+            sh(where, "git", "worktree", "add", "-q", "-B",
+               "overnight/isolated/s1", str(wroot / "s1"), "HEAD")
+            if then:
+                then(wroot)
+            scen = root / f"scenario-{name}.json"
+            scen.write_text(json.dumps({"s1": ["pass"]}), encoding="utf-8")
+            done = run_runner(where, scen)
+            wlog = (where / "overnight" / "runs" / "isolated" / "run.log").read_text(
+                encoding="utf-8")
+            return where, wroot, done, wlog
+
+        # (a) The registered leftover is still on disk. It must be handed to git
+        # to remove, never torn off the filesystem behind git's back.
+        live, wroot, done, wlog = leftover("wt-live")
+        check("a registered leftover is not treated as an orphan",
+              "orphaned worktree" not in wlog, wlog[:800])
+        check("...and the step runs rather than going STUCK at zero attempts",
+              ledger(live).get("s1", {}).get("outcome") == "PASS",
+              str(ledger(live).get("s1")))
+        check("...with no `already used by worktree` anywhere in the run",
+              "already used by worktree" not in wlog, wlog[-600:])
+        check("...and the run ends cleanly", done.returncode == 0, wlog[-300:])
+
+        # (b) The directory was torn off behind git's back by something else -
+        # the state the defect used to leave. The run must recover, not stall.
+        dang, wroot, done, wlog = leftover(
+            "wt-dangling", lambda r: shutil.rmtree(r / "s1", ignore_errors=True))
+        check("a dangling registration with no directory does not stall the step",
+              ledger(dang).get("s1", {}).get("outcome") == "PASS",
+              str(ledger(dang).get("s1")))
+
+        # (c) The function's actual job, which the fix must not lose: a directory
+        # under the root that git knows nothing about IS an orphan, and goes.
+        def stray(r):
+            (r / "old-step").mkdir(parents=True, exist_ok=True)
+            (r / "old-step" / "junk.txt").write_text("from a crashed run\n", encoding="utf-8")
+
+        orph, wroot, done, wlog = leftover("wt-orphan", stray)
+        check("an unregistered directory under the root is still removed",
+              not (wroot / "old-step").exists(),
+              str(sorted(p.name for p in wroot.iterdir())) if wroot.exists() else "(gone)")
+        check("...and is named in the log as an orphan",
+              "orphaned worktree" in wlog, wlog[:800])
+        check("...and the step still passes",
+              ledger(orph).get("s1", {}).get("outcome") == "PASS",
+              str(ledger(orph).get("s1")))
+
+        print("18. work a crashed run left on a scratch branch is rescued, not reset away")
+        # `worktree add -B` FORCE-MOVES the branch to base. A crashed run's only
+        # copy of its work is a commit on that branch, so re-running the step
+        # made it unreachable - no tag, no note, nothing for the morning to find.
+        # safe_reset has tagged before discarding since the beginning; this is
+        # the other place the runner moves a ref, and it did not.
+        crashed = make_repo(root / "wt-rescue")
+        (crashed / "overnight" / "steps.yaml").write_text(ISOLATED_SPEC, encoding="utf-8")
+        sh(crashed, "git", "add", "-A")
+        sh(crashed, "git", "commit", "-q", "-m", "isolated spec")
+        cwt = crashed.parent / f"{crashed.name}.overnight-worktrees" / "isolated" / "s1"
+        sh(crashed, "git", "worktree", "add", "-q", "-B", "overnight/isolated/s1",
+           str(cwt), "HEAD")
+        (cwt / "half-done.txt").write_text("what the crashed run had built\n", encoding="utf-8")
+        sh(cwt, "git", "add", "-A")
+        sh(cwt, "git", "commit", "-q", "-m", "work from a run that crashed")
+        orphaned = sh(cwt, "git", "rev-parse", "HEAD").stdout.strip()
+        sh(crashed, "git", "worktree", "remove", "--force", str(cwt))
+        scen = root / "scenario-wt-rescue.json"
+        scen.write_text(json.dumps({"s1": ["pass"]}), encoding="utf-8")
+        done = run_runner(crashed, scen)
+        tags = sh(crashed, "git", "tag", "--list", "rescue/*").stdout
+        check("the orphaned commit is tagged before the branch is reset",
+              "rescue/s1/scratch-1" in tags, tags or "(no rescue tags)")
+        check("...and the tag really names that commit",
+              sh(crashed, "git", "rev-parse", "rescue/s1/scratch-1^{commit}",
+                 check=False).stdout.strip() == orphaned, orphaned)
+        disc = crashed / "overnight" / "runs" / "isolated" / "s1" / "discarded-commits.md"
+        check("...and the step directory says what was on the branch and how to get it",
+              disc.exists() and orphaned in disc.read_text(encoding="utf-8")
+              and "cherry-pick" in disc.read_text(encoding="utf-8"),
+              disc.read_text(encoding="utf-8")[:400] if disc.exists() else "(no file)")
+        check("...and the step itself still runs",
+              ledger(crashed).get("s1", {}).get("outcome") == "PASS",
+              str(ledger(crashed).get("s1")))
 
         if failures:
             print("\n--- run.log tail ---")

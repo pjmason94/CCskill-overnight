@@ -916,15 +916,59 @@ class Runner:
                 self.log(f"    COULD NOT link {rel} into the worktree: {exc}."
                          " A gate that needs it will fail there.")
 
+    def rescue_scratch_branch(self, step_id, base):
+        """`worktree add -B` force-moves the branch. Tag whatever that orphans.
+
+        A crashed run leaves its work committed on the step's scratch branch and
+        NOWHERE ELSE - the worktree that held it is gone and the branch was never
+        integrated. Re-running that step resets the branch to `base`, and those
+        commits become unreachable with no tag, no note, and no way for the
+        morning to learn they ever existed. `safe_reset` has tagged before
+        discarding since the beginning; this is that same rule applied at the
+        other place the runner moves a ref.
+        """
+        branch = self.scratch_branch(step_id)
+        if self.git("rev-parse", "--verify", "--quiet", branch, tree=self.repo)[0] != 0:
+            return
+        losing = self.commits_since(base, tip=branch, tree=self.repo)
+        if not losing:
+            return
+        step_dir = self.out / dir_name(step_id)
+        step_dir.mkdir(parents=True, exist_ok=True)
+        record = [f"# commits an earlier run left on `{branch}`", "",
+                  f"The scratch branch is being reset to `{base[:8]}` so this step"
+                  " can run again. These commits were on it and are not on the"
+                  " operator's branch:", ""]
+        for index, (sha, email, subject) in enumerate(losing, 1):
+            tag = f"rescue/{self.ref_safe(step_id)}/scratch-{index}"
+            self.git("tag", "-f", tag, sha, tree=self.repo)
+            self.log(f"    RESCUING {sha[:8]} left on {branch} by an earlier run"
+                     f" - kept as tag `{tag}`: {subject[:80]}")
+            record.append(f"- `{sha}` <{email}> tag `{tag}`: {subject}")
+        with (step_dir / "discarded-commits.md").open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(record) +
+                         "\n\nRecover one with `git cherry-pick <sha>`;"
+                         " drop the tags with `git tag -d <tag>` when done.\n\n")
+
     def add_worktree(self, step_id, base, detach=False):
         """A private tree on a scratch branch, based at `base`."""
         path = self.worktree_root() / (self.ref_safe(step_id) if not detach else "_probe")
         if path.exists():
             self.remove_worktree(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if not detach:
+            self.rescue_scratch_branch(step_id, base)
         args = ["worktree", "add", "--detach", str(path), base] if detach else \
             ["worktree", "add", "-B", self.scratch_branch(step_id), str(path), base]
         code, output = self.git(*args, tree=self.repo)
+        if code != 0 and "already used by worktree" in output:
+            # A registration git still holds for a directory that is no longer
+            # there. Prune it and try once more: a leftover from a crashed run
+            # must not cost a step its night, which is exactly what it did on
+            # 2026-09-07 - STUCK at zero attempts, no code read, nothing spent.
+            self.log("    a stale worktree registration is in the way; pruning and retrying")
+            self.git("worktree", "prune", tree=self.repo)
+            code, output = self.git(*args, tree=self.repo)
         if code != 0:
             self.log(f"    COULD NOT create a worktree at {path}: {output[:300]}")
             return None
@@ -944,17 +988,58 @@ class Runner:
         if not keep_branch:
             self.git("branch", "-d", str(path.name), tree=self.repo)
 
+    @staticmethod
+    def _path_key(path):
+        """A path in one canonical form, for comparing two of them."""
+        try:
+            path = Path(path).resolve()
+        except OSError:
+            path = Path(path)
+        return os.path.normcase(str(path))
+
+    def registered_worktrees(self):
+        """The paths git currently holds a registration for. None if it cannot say.
+
+        NEVER compare this output as text. `worktree list --porcelain` prints
+        FORWARD slashes on every platform; `str(path)` on Windows prints
+        BACKslashes, so `str(path) not in known` was true for every registered
+        worktree there and prune_worktrees deleted all of them. Resolved paths,
+        case-normalised, or nothing.
+        """
+        code, output = self.git("worktree", "list", "--porcelain", tree=self.repo)
+        if code != 0:
+            return None                 # "I do not know" is not "there are none"
+        return {self._path_key(line[len("worktree "):].strip())
+                for line in output.splitlines() if line.startswith("worktree ")}
+
     def prune_worktrees(self):
-        """After a crash: git forgets the registration, the directory remains."""
+        """After a crash: git forgets the registration, the directory remains.
+
+        Only a directory git does NOT know about is an orphan. One it does know
+        about is a live worktree, and tearing that off the filesystem is worse
+        than leaving it: the registration is then dangling, the next
+        `worktree add -B` for its branch fails `already used by worktree`, and
+        the step goes STUCK at zero attempts. That is the 2026-09-07 field
+        defect, and it cost a run its night.
+        """
         self.git("worktree", "prune", tree=self.repo)
         root = self.worktree_root()
         if not root.exists():
             return
-        known = self.git("worktree", "list", "--porcelain", tree=self.repo)[1]
+        known = self.registered_worktrees()
+        if known is None:
+            self.log("    could not list git's worktrees; leaving any leftovers alone")
+            return
+        removed = False
         for path in sorted(root.iterdir()):
-            if path.is_dir() and str(path) not in known:
+            if path.is_dir() and self._path_key(path) not in known:
                 self.log(f"    removing an orphaned worktree from an earlier run: {path}")
                 shutil.rmtree(path, ignore_errors=True)
+                removed = True
+        if removed:
+            # Anything the removal has just made stale goes now, rather than
+            # surviving into the first `worktree add` of the run.
+            self.git("worktree", "prune", tree=self.repo)
 
     def integrate(self, step_id, base, branch):
         """Bring the worktree's commits onto the operator's branch.

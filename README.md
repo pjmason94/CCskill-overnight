@@ -420,6 +420,17 @@ collects from the project root (`pytest -q` reads no `.gitignore`), and it would
 itself show up as an untracked path in the very tree whose cleanliness it exists
 to protect.
 
+**A run that crashed leaves worktrees behind, and the next one clears them
+safely.** At start-up the runner prunes registrations git is holding for
+directories that have gone, and removes directories under its worktree root that
+git knows nothing about - naming each one in `run.log` as an orphan. A worktree
+git *does* still have registered is left for git to remove, never torn off the
+filesystem: doing that leaves a dangling registration, and the next step on that
+branch cannot be created at all. Anything the crashed run had committed to a
+step's scratch branch is tagged `rescue/<step>/scratch-<n>` and listed in that
+step's `discarded-commits.md` before the branch is reset, so re-running a step
+never makes its predecessor's work unreachable.
+
 A second *runner* is refused either way - the lock (section 16) holds the
 repository. What it does not lock is you. What that means in practice:
 

@@ -7,6 +7,34 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Fixed
 
+- **A leftover worktree no longer costs a step its night.** `prune_worktrees`
+  compared `str(path)` against the text of `git worktree list --porcelain`. That
+  listing prints **forward** slashes on every platform; `str(path)` on Windows
+  prints **backslashes**. The membership test was therefore false for every
+  registered worktree, and the function deleted the directory of all of them -
+  live ones included. `git worktree prune` had already run by that point, so each
+  deletion left a *dangling registration*, and the next `worktree add -B` for that
+  branch failed `already used by worktree`. The step was recorded `STUCK` with
+  **zero attempts**, having read no code and spent nothing; on 2026-09-07 that
+  took a real run's step out for the night in 75 seconds.
+
+  Paths are now compared resolved and case-normalised, never as text, so only a
+  directory git genuinely does not know about is treated as an orphan; `git
+  worktree prune` runs again after any removal; and `add_worktree` prunes and
+  retries once if it still meets `already used by worktree`. If git cannot list
+  its worktrees at all the runner now leaves the leftovers alone and says so,
+  rather than reading "cannot say" as "there are none".
+
+- **Work a crashed run left on a scratch branch is now rescued before the branch
+  is reset.** `worktree add -B` force-moves the step's scratch branch to the base
+  commit. A run that crashed mid-step has its only copy of that work committed
+  there and nowhere else, so re-running the step made those commits unreachable -
+  no tag, no note, nothing for the morning to find. They are now tagged
+  `rescue/<step>/scratch-<n>`, logged with their subjects, and listed in the
+  step's `discarded-commits.md` with the `git cherry-pick` to get them back. This
+  is the rule `safe_reset` has followed since the beginning, applied at the other
+  place the runner moves a ref.
+
 - **A character the console could not print no longer ends the run.** The runner
   echoes worker-written text to stdout, and a worker's summary carrying `<=`
   killed a live 02:00 scheduled run on 2026-09-07: Task Scheduler's `cmd.exe`
