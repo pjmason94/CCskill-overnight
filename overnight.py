@@ -359,6 +359,51 @@ class SpecError(Exception):
     pass
 
 
+def parse_until(text, now=None):
+    """Resolve an `until` value to the absolute datetime the clock stops at.
+
+    `--hours 7` asks the operator to do arithmetic at midnight against a number
+    that is only ever a proxy for the thing they actually mean, which is a time
+    of day: they know when they will be at the desk, not how many hours away
+    that is. Worse, the arithmetic is done ONCE, at launch, so every minute
+    spent typing the command comes off the end of the run.
+
+    A bare `07:30` means the NEXT 07:30 - today's if it has not happened yet,
+    tomorrow's if it has. That is what somebody typing it at 23:00 means, and it
+    is the only reading under which the obvious overnight command works.
+
+    A full `2026-09-08 07:30` is taken literally, and one already in the past is
+    an ERROR rather than a silent roll forward to the next day: a dated stop
+    time before the run starts is a typo, and rolling it forward would hide the
+    typo behind a run that looked fine.
+    """
+    now = now or dt.datetime.now()
+    raw = str(text).strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            when = dt.datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        if when <= now:
+            raise SpecError(
+                f"until `{raw}` is already past ({now:%Y-%m-%d %H:%M}); the run"
+                " would stop before starting a single step")
+        return when
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            clock = dt.datetime.strptime(raw, fmt).time()
+        except ValueError:
+            continue
+        when = now.replace(hour=clock.hour, minute=clock.minute,
+                           second=clock.second, microsecond=0)
+        if when <= now:
+            when += dt.timedelta(days=1)
+        return when
+    raise SpecError(f"until `{raw}` is not a time: expected `HH:MM` for the next"
+                    " occurrence of that time, or `YYYY-MM-DD HH:MM` for one"
+                    " particular moment")
+
+
 def load_spec(path):
     """Load and validate a steps spec. Raises SpecError with a plain reason."""
     try:
@@ -693,10 +738,11 @@ class Runner:
         # It is an exclusive action now, dispatched by main() beside --list.
         self.claude = args.fake_worker or shutil.which("claude")
         self.started = dt.datetime.now()
-        hours = args.hours if args.hours is not None else float(
-            self.run_cfg.get("hours", 6))
-        self.stop_at = time.time() + hours * 3600
-        self.hours = hours
+        # THE CLOCK, and which of four sources set it. The banner names the
+        # source and the resolved absolute time, because the one thing an
+        # operator cannot check at 03:00 is an assumption they made at 23:00.
+        self.stop_at, self.clock_source = self.resolve_clock()
+        self.hours = (self.stop_at - time.time()) / 3600
         self._ran_this_session = set()
         # -- the wall -------------------------------------------------------
         # A worker that returns NOTHING is not a worker that wrote bad code, and
@@ -748,6 +794,33 @@ class Runner:
         self.probe_cost = 0.0
 
     # -- the ledger ----------------------------------------------------------
+    def resolve_clock(self):
+        """Return (stop_at epoch, a phrase naming what set it).
+
+        Four sources, in this order:
+
+            --until (CLI)  >  --hours (CLI)  >  run.until (spec)  >  run.hours
+
+        CLI beats spec FIRST, and only then does `until` beat `hours` within a
+        level. The other reading - `until` winning wherever it appears - makes a
+        spec carrying `until` silently swallow a typed `--hours`, and a flag that
+        is quietly inert is worse than one that is refused: the operator watches
+        the run stop at a time they explicitly overrode and has nothing to blame.
+        """
+        now = dt.datetime.now()
+        if self.args.until:
+            return parse_until(self.args.until, now).timestamp(), \
+                f"--until {self.args.until}"
+        if self.args.hours is not None:
+            return time.time() + self.args.hours * 3600, f"--hours {self.args.hours:g}"
+        if self.run_cfg.get("until"):
+            raw = str(self.run_cfg["until"])
+            return parse_until(raw, now).timestamp(), f"run.until `{raw}` in the spec"
+        if self.run_cfg.get("hours") is not None:
+            hours = float(self.run_cfg["hours"])
+            return time.time() + hours * 3600, f"run.hours {hours:g} in the spec"
+        return time.time() + 6 * 3600, "the default of 6 h (no until, no hours)"
+
     def done_map(self, spec=None):
         """{step id: its done: mapping} for every step that has run."""
         steps = (spec or self.spec)["steps"]
@@ -1738,7 +1811,8 @@ class Runner:
                  f" marched through - it waits here.")
         self.log(f"    probing every {self.park_poll_min:.0f} min until the account"
                  f" answers. The clock is unchanged: this run still stops starting"
-                 f" steps at {dt.datetime.fromtimestamp(self.stop_at):%H:%M}.")
+                 f" steps at"
+                 f" {dt.datetime.fromtimestamp(self.stop_at):%Y-%m-%d %H:%M}.")
         while True:
             next_probe = time.time() + self.park_poll_min * 60
             while time.time() < next_probe:
@@ -2735,8 +2809,12 @@ class Runner:
         self.acquire_lock()
         self.log("=" * 72)
         self.log(f"run `{self.run_cfg['name']}`: spec {self.spec_path.name}, repo {self.repo},"
-                 f" stop starting after {self.hours} h, dry_run={self.args.dry_run},"
+                 f" dry_run={self.args.dry_run},"
                  f" fake_worker={bool(self.args.fake_worker)}")
+        self.log(f"    the clock: {self.clock_source} - no step is STARTED after"
+                 f" {dt.datetime.fromtimestamp(self.stop_at):%Y-%m-%d %H:%M}"
+                 f" ({max(0.0, self.hours):.1f} h from now). A step already running is never"
+                 f" interrupted by it.")
         self.log(f"    if {self.wall_threshold} workers in a row return nothing:"
                  + (f" PARK and probe every {self.park_poll_min:.0f} min"
                     if self.on_wall == "park" else " STOP, leaving the rest pending"))
@@ -2763,7 +2841,10 @@ class Runner:
             step = todo[0]
             if time.time() > self.stop_at:
                 reason = "the clock: no step was started after the stop time"
-                self.log(f"STOP: {reason}. {len(todo)} step(s) not started:"
+                self.log(f"STOP: {reason}"
+                         f" ({dt.datetime.fromtimestamp(self.stop_at):%Y-%m-%d %H:%M},"
+                         f" set by {self.clock_source})."
+                         f" {len(todo)} step(s) not started:"
                          f" {', '.join(s['id'] for s in todo)}")
                 break
             self._ran_this_session.add(step["id"])
@@ -2859,7 +2940,14 @@ class Runner:
 SPEC_FORMAT = """\
 run:
   name: <run name; output goes to overnight/runs/<name>/>
-  hours: 6                       # stop STARTING steps after this many hours
+  until: "07:30"                 # stop STARTING steps at this time. `HH:MM` is
+                                 # the next occurrence of it, so `07:30` typed
+                                 # at 23:00 means tomorrow morning; or give
+                                 # `YYYY-MM-DD HH:MM` for one exact moment.
+                                 # Preferred over `hours` - it survives a delay
+                                 # between writing the plan and launching it
+  hours: 6                       # stop STARTING steps after this many hours.
+                                 # Superseded by `until`; kept for old plans
   attempts: 3                    # build attempts before STUCK
   worker_timeout_min: 90
   budget_usd_per_step: 40        # optional, --max-budget-usd on every worker.
@@ -3152,7 +3240,17 @@ def main():
                              " RUN or REPLACE? - and exit; defaults to the current"
                              " directory. Exits 3 on BLOCKED.")
     parser.add_argument("--repo", default="", help="repository root (default: found above the spec)")
-    parser.add_argument("--hours", type=float, default=None)
+    parser.add_argument("--until", default="", metavar="TIME",
+                        help="stop STARTING steps at this time: `07:30` for the"
+                             " next 07:30 (tomorrow's, if today's has passed), or"
+                             " `2026-09-08 07:30` for one exact moment. A step"
+                             " already running is never interrupted. Wins over"
+                             " --hours and over the spec")
+    parser.add_argument("--hours", type=float, default=None,
+                        help="stop STARTING steps after this many hours."
+                             " Superseded by --until, which says what you"
+                             " actually mean and does not decay while you type"
+                             " the command; kept for old plans and scripts")
     parser.add_argument("--on-wall", default="", choices=["", "park", "stop"],
                         help="what to do when the workers stop answering entirely"
                              " (a usage limit, a logged-out CLI, no network):"
@@ -3191,7 +3289,13 @@ def main():
         return print_progress(args.progress, args.run)
     if not args.spec:
         parser.error("--spec is required (or use --mode / --progress / --format)")
-    runner = Runner(args)
+    try:
+        runner = Runner(args)
+    except SpecError as exc:
+        # A bad `until`, isolation or on_wall used to leave a traceback, which is
+        # the least readable thing the runner can print and the most likely to be
+        # read at midnight by somebody about to walk away from it.
+        raise SystemExit(f"the run cannot start: {exc}")
     if args.reset_state:
         # Exclusive, and first: forgetting the outcomes is a decision of its own,
         # and the launch that follows is the user's separate command.

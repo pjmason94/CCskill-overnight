@@ -76,9 +76,12 @@ that `overnight/runs/` and `overnight/DECISIONS-PENDING.md` are ignored.
 ## 6. Estimate the runtime and say it
 
 About 25 minutes per build step on a first run, about 10 per review; a step that
-sticks costs up to three attempts plus a diagnostic. Set `--hours` so the clock
-stops **starting** new steps before the user is back - a step already running is
-never interrupted by it.
+sticks costs up to three attempts plus a diagnostic. Set `--until` to the time
+the user will be back, so the clock stops **starting** new steps before then - a
+step already running is never interrupted by it. `--until 07:30` means the next
+07:30, so it reads correctly whether it is typed at 22:00 or at 02:00; prefer it
+to `--hours`, whose arithmetic is done once and is already stale by the time the
+user pastes the command.
 
 ## 7. Hand over the launch command
 
@@ -88,11 +91,11 @@ the user a command for their own shell, and match their shell exactly.
 
 PowerShell (Windows), one line, absolute paths:
 
-    python -u "<skill dir>\overnight.py" --spec "<project>\overnight\steps.yaml" --hours 7
+    python -u "<skill dir>\overnight.py" --spec "<project>\overnight\steps.yaml" --until 07:30
 
 POSIX:
 
-    python -u <skill dir>/overnight.py --spec <project>/overnight/steps.yaml --hours 7
+    python -u <skill dir>/overnight.py --spec <project>/overnight/steps.yaml --until 07:30
 
 **`--spec` must be an ABSOLUTE path.** A relative one resolves against the
 launching shell's working directory, and if that is not the project the runner

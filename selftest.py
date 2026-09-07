@@ -54,6 +54,7 @@ is a path that will be exercised for the first time at 03:00.
 """
 import argparse
 import contextlib
+import datetime as dt
 import io
 import json
 import re
@@ -73,7 +74,8 @@ RUNNER = HERE / "overnight.py"
 FAKE = HERE / "fake_worker.py"
 
 sys.path.insert(0, str(HERE))
-from overnight import Log, _step_blocks, is_resumable, upsert_done   # noqa: E402
+from overnight import (Log, SpecError, _step_blocks, is_resumable,   # noqa: E402
+                       parse_until, upsert_done)
 
 
 def _blocks_of(text):
@@ -1788,6 +1790,155 @@ def section_23(c):
           str(mode(stuck)))
 
 
+def section_24(c):
+    root = c.root
+    check = c.check
+
+    print("24. the clock: --until, and the stop it enforces")
+    # THE CLOCK HAD NO TEST AT ALL until this section, which is the only path in
+    # the runner that can end a run with steps still pending and no failure to
+    # show for it. It is also the one setting an operator gets wrong silently:
+    # `--hours 7` is arithmetic done once, at launch, against a number that is
+    # only ever a proxy for the time of day they actually mean - and every minute
+    # spent typing the command comes off the end of the run.
+
+    # -- what a time means ------------------------------------------------
+    # Against a FIXED reference, not `now`. A test whose expected answer is
+    # computed from the clock it is testing proves only that two copies of the
+    # same arithmetic agree, and one run at 23:59 would behave differently from
+    # every other run of the suite.
+    ref = dt.datetime(2026, 9, 7, 23, 0)
+    check("`07:30` at 23:00 means TOMORROW morning, which is what it was typed to mean",
+          parse_until("07:30", ref) == dt.datetime(2026, 9, 8, 7, 30))
+    check("`23:30` at 23:00 means tonight - the next occurrence, not always tomorrow",
+          parse_until("23:30", ref) == dt.datetime(2026, 9, 7, 23, 30))
+    check("a dated time is taken literally",
+          parse_until("2026-09-09 06:15", ref) == dt.datetime(2026, 9, 9, 6, 15))
+    # A DATED stop time in the past is a typo, and rolling it forward a day the
+    # way a bare `HH:MM` is rolled would hide the typo behind a run that looked
+    # fine. A bare time cannot be a typo in that sense - it has no date to be
+    # wrong about.
+    refused = None
+    try:
+        parse_until("2026-09-06 06:15", ref)
+    except SpecError as exc:
+        refused = str(exc)
+    check("a dated time already past is REFUSED, not rolled forward a day",
+          refused is not None and "past" in refused, f"got {refused!r}")
+    nonsense = None
+    try:
+        parse_until("tomorrow morning", ref)
+    except SpecError as exc:
+        nonsense = str(exc)
+    check("a value that is not a time is refused, and the message says both forms",
+          nonsense is not None and "HH:MM" in nonsense and "YYYY-MM-DD" in nonsense,
+          f"got {nonsense!r}")
+
+    # -- which of four sources wins ---------------------------------------
+    def prep(name, text):
+        """A repository with a spec of our choosing, committed."""
+        where = make_repo(root / name)
+        (where / "overnight" / "steps.yaml").write_text(text, encoding="utf-8")
+        sh(where, "git", "add", "-A")
+        sh(where, "git", "commit", "-q", "-m", "spec", check=False)
+        return where
+
+    def launch(where, *extra):
+        """(the finished process, the banner's clock line)."""
+        done = run_runner(where, c.scenario_path, *extra)
+        return done, next((ln for ln in done.stdout.splitlines()
+                           if "the clock:" in ln), "")
+
+    def clock_line(name, text, *extra):
+        where = prep(name, text)
+        done, line = launch(where, *extra)
+        return where, done, line
+
+    now = dt.datetime.now()
+    later = (now + dt.timedelta(hours=3)).replace(second=0, microsecond=0)
+    other = (now + dt.timedelta(hours=5)).replace(second=0, microsecond=0)
+    spec_until = SPEC.replace("hours: 1", 'until: "%s"' % other.strftime("%H:%M"))
+    spec_neither = SPEC.replace("  hours: 1\n", "")
+
+    _, _, line = clock_line("clock-cli-until", spec_until, "--dry-run", "--only", "s1",
+                            "--until", later.strftime("%H:%M"), "--hours", "9")
+    check("--until beats --hours on the command line",
+          "--until" in line and "--hours" not in line, f"got {line!r}")
+    check("...and the banner names the absolute time it resolved to, not the flag alone",
+          later.strftime("%Y-%m-%d %H:%M") in line, f"got {line!r}")
+
+    # THE JUDGEMENT CALL, stated in the banner so it need not be guessed at:
+    # the command line beats the spec FIRST, and only then does `until` beat
+    # `hours` within a level. The other reading - `until` winning wherever it
+    # appears - makes a spec carrying `until` silently swallow a typed --hours.
+    # An operator who overrides the clock and watches the run stop at the time
+    # they overrode has nothing to blame and no way to find out why.
+    _, _, line = clock_line("clock-cli-hours", spec_until, "--dry-run", "--only", "s1",
+                            "--hours", "9")
+    check("a typed --hours beats an `until` in the spec - the flag is never inert",
+          "--hours 9" in line, f"got {line!r}")
+
+    _, _, line = clock_line("clock-spec-until", spec_until, "--dry-run", "--only", "s1")
+    check("run.until in the spec is used when the command line says nothing",
+          "run.until" in line and other.strftime("%Y-%m-%d %H:%M") in line, f"got {line!r}")
+
+    _, _, line = clock_line("clock-spec-hours", SPEC, "--dry-run", "--only", "s1")
+    check("run.hours in the spec is used when it has no until",
+          "run.hours 1" in line, f"got {line!r}")
+
+    _, _, line = clock_line("clock-default", spec_neither, "--dry-run", "--only", "s1")
+    check("a spec with neither falls back to six hours, and SAYS it is the default",
+          "default" in line and "6" in line, f"got {line!r}")
+
+    # -- the clock stops a run --------------------------------------------
+    # `--hours 0` is the deterministic form of "the time has come": no step can
+    # be started, so nothing depends on how fast this machine runs a fake worker.
+    where, done, _ = clock_line("clock-stops", SPEC, "--hours", "0")
+    check("the clock stops the run before a single step starts",
+          "STOP: the clock" in done.stdout, done.stdout[-300:])
+    check("...and the STOP line names the stop time and what set it",
+          "set by --hours 0" in done.stdout, done.stdout[-300:])
+    check("...and names the steps that were not started, so the morning is not a puzzle",
+          "s1" in done.stdout.split("not started:")[-1] if "not started:" in done.stdout
+          else False)
+    check("...and nothing is recorded against them: pending, not failed",
+          ledger(where) == {}, str(ledger(where)))
+
+    # The same stop, driven by --until rather than --hours.
+    #
+    # THE WINDOW IS MEASURED FROM THE LAUNCH, NOT FROM THE TOP OF THE SECTION.
+    # It was five lines earlier at first, before `make_repo` runs four git
+    # commands, and the window had already expired by the time the runner parsed
+    # it - so the run was refused as already past instead of being stopped by the
+    # clock. That passed run on its own and failed in the full suite, where the
+    # machine is busier, which is the worst way for a test to be wrong.
+    #
+    # Five seconds is safe at both ends and does not race: launching a Python
+    # process takes well under it, so the value is still in the future when it is
+    # parsed; and six steps cannot run in it, so the clock is certain to stop the
+    # queue. Which iteration it stops on does not matter and is not asserted.
+    where = prep("clock-stops-until", SPEC)
+    imminent = (dt.datetime.now() + dt.timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S")
+    done, _ = launch(where, "--until", imminent)
+    check("--until enforces the same stop, and the log says it was --until that did it",
+          "STOP: the clock" in done.stdout and "set by --until" in done.stdout,
+          (done.stdout + done.stderr)[-300:])
+    check("...and the plan is left with steps still to run rather than failures",
+          len(ledger(where)) < 5, str(ledger(where)))
+
+    # -- a bad --until is refused before anything happens -------------------
+    where = make_repo(root / "clock-bad")
+    done = run_runner(where, c.scenario_path, "--until", "2020-01-01 07:30")
+    check("a stop time already past is refused rather than started",
+          done.returncode != 0)
+    check("...with a sentence, not a traceback - it is read at midnight, if at all",
+          "Traceback" not in (done.stdout + done.stderr)
+          and "already past" in (done.stdout + done.stderr),
+          (done.stdout + done.stderr)[-300:])
+    check("...and the refusal happens before the run directory is made",
+          not (where / "overnight" / "runs" / "selftest").exists())
+
+
 SECTIONS = [
     # key   needs        checks  function
     ("1",   (),          70,   section_1_3,
@@ -1812,6 +1963,7 @@ SECTIONS = [
     ("21",  (),          13,   section_21, "the per-step budget"),
     ("22",  (),          17,   section_22, "a cut-off worker is continued"),
     ("23",  (),          12,   section_23, "stranded work is retested, not discarded"),
+    ("24",  (),          20,   section_24, "the clock: --until, and the stop it enforces"),
 ]
 
 TOTAL_CHECKS = sum(s[2] for s in SECTIONS)

@@ -103,50 +103,6 @@ wrong stays where it is, at attempt 3, where it is worth paying a worker for.
 Cost: near zero, no extra worker. Benefit: the second of three attempts stops
 being a coin toss.
 
-## 11. `--until`, not `--hours`: the operator's constraint is a deadline
-
-**The metric is wrong.** `--hours` asks for a duration. What an operator actually
-has is a moment - "I want to see what has been achieved by 07:30". Every launch
-therefore begins with the operator converting their real constraint into the
-runner's, in their head, at the exact moment they are least equipped to do
-arithmetic: last thing at night. On 2026-09-06 that conversion was done four times
-in one evening between two projects and got it wrong once, in the direction that
-would have cost an entire eight-hour run.
-
-**A duration is also unstable under the launch it is designed for.** `--hours 8`
-in a scheduled task means eight hours from whenever the task fires. If the trigger
-is missed, or the first launch refuses on a dirty tree and the operator relaunches
-twenty minutes later, the run overshoots the morning by exactly the delay - and it
-does so silently, because nothing in the run knows what time the operator meant.
-A deadline is invariant to when the launch actually happened, which is precisely
-the property an unattended, scheduled thing needs.
-
-**It makes the parking rule obvious rather than arguable.** Parking already
-does NOT extend the stop time, which under `--hours` is a defensible choice
-rather than an evident one: a three-hour wall silently eats most of a run whose
-operator asked for six hours of work. Under `--until` there is nothing to argue
-about - the promise is a moment, so a park eats into the work and the deadline
-does not move, which is the operator's actual intent. They asked to see results
-by a time, not to be given a fixed quantity of compute whenever it could be
-spent.
-
-**It lets the runner stop honestly, which `--hours` cannot.** Today the clock
-stops the runner STARTING steps; a step already running carries on, so the real
-end is the deadline plus however long the last step takes - up to half an hour
-past, on the step lengths seen so far. An operator reading "results by 07:30"
-means results, not a step still running at 07:52. With a deadline and the
-`expected_min` each step already carries (item 3), the runner can decline to start
-a step it cannot finish in time, and say so: `not starting b5-2 (est 18 min,
-14 min left)`. That is a better answer than starting it and being reset by the
-clock, and it is the first thing that would make `expected_min` earn its place.
-
-**Shape.** `--until 07:30`, resolved to the next occurrence of that time and
-logged ONCE as an absolute datetime at the top of the run, so the log is never
-ambiguous about which 07:30 was meant. `run.until` in the spec beside `run.hours`.
-Keep `--hours` working as a synonym computed against the start - it is a running
-contract, deprecated rather than removed, and the change is noted in `README.md`
-and the changelog when it lands.
-
 ## 1. The expected-value triage on a raised judgement
 
 **The idea.** Today a step that needs judgement stops and leaves the decision for
@@ -341,6 +297,19 @@ decisions that followed, would be worth more than any amount of prose about it.
 
 ## Done
 
+- **`--until`, not `--hours`** (originally item 11). The clock is a moment, not a
+  duration: `--until 07:30` is the next 07:30, `--until "2026-09-08 07:30"` one
+  exact moment, and `run.until` sits in the spec beside `run.hours`. A duration
+  made the operator convert their real constraint - "results by 07:30" - into the
+  runner's, in their head, last thing at night, and then decay it by however long
+  the launch took; under a scheduled trigger it overshot the morning by exactly
+  the delay, silently, because nothing in the run knew what time was meant.
+  `--hours` still works and is deprecated rather than removed. Precedence is
+  CLI-over-spec first, `until` over `hours` second, so a typed `--hours` is never
+  made inert by an `until` in the plan file, and the banner and the `STOP:` line
+  both name the source and the resolved absolute time. **Declining to START a
+  step that will not finish before the deadline is NOT part of this** - it needs
+  `expected_min` to be mandatory, and it is item 3.
 - **A circuit breaker, and a run that waits out a usage wall** (originally items
   9 and 10). The runner counts BARREN worker invocations - exited non-zero AND
   produced no result event - and calls the wall at three in a row. The step it

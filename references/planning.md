@@ -57,7 +57,10 @@ Batch the questions; do not ask serially. What you need:
 
 - **What should be true in the morning?** Push for deliverables, not areas.
 - **What must NOT be touched?** Modules, files, public interfaces, data.
-- **How many hours?** This sets `--hours`, which stops new steps STARTING.
+- **When will you be back at the desk?** This sets `--until`, the time after
+  which no new step is STARTED. Ask for the time, not a number of hours - the
+  time is what they know, and a duration written now is wrong by however long
+  it takes them to launch it.
 - **Which decisions may the run take, and which must wait?** Anything the run
   may not decide becomes an instruction to write to the decisions file and move
   on, never a guess.
@@ -187,7 +190,7 @@ Then state, in this order:
 1. the number of steps by kind, and the tier of each;
 2. the estimated wall-clock (about 25 minutes per build step on a first run,
    about 10 per review, plus up to three attempts and a diagnostic where a step
-   sticks) and therefore the `--hours` to pass;
+   sticks) and therefore whether the plan fits before the `until` they gave;
 3. the rough cost, if the project has past runs to calibrate against;
 4. the git warning again, if it applied;
 5. **that stage 1 is done and nothing has been launched.** Tell the user to come

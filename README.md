@@ -199,11 +199,11 @@ no worker has written what it tests yet. The point is that the gate ran at all.
 path: a relative one resolves against the launching shell's working directory,
 and if that is not the project the runner will not find the repository.
 
-    python -u <path to overnight.py> --spec "<absolute path>/overnight/steps.yaml" --hours 8
+    python -u <path to overnight.py> --spec "<absolute path>/overnight/steps.yaml" --until 07:30
 
 Windows PowerShell:
 
-    python -u C:\Users\<you>\.claude\skills\overnight\overnight.py --spec "C:\path\to\project\overnight\steps.yaml" --hours 8
+    python -u C:\Users\<you>\.claude\skills\overnight\overnight.py --spec "C:\path\to\project\overnight\steps.yaml" --until 07:30
 
 Launch it yourself, from your own shell. Claude Code's permission classifier will
 (correctly) refuse to let a session spawn workers at `bypassPermissions` on your
@@ -226,10 +226,35 @@ queue is empty, the clock has run out, or the plan has become invalid, it writes
 exit code 2, with the reason in `run.log`. A gate that fails before the first
 worker has touched anything is a broken plan, not a broken worker.
 
-**The clock.** `--hours` (or `run.hours`) is the time after which no new step is
+**The clock.** `--until` (or `run.until`) is the time after which no new step is
 STARTED. A step already running finishes, including its gates and any review that
 follows. Set it so the last step can start before you are back, not so the run
 ends exactly then.
+
+`--until 07:30` means the next 07:30 - tomorrow's, if today's has passed - which
+is what it means to somebody typing it at 23:00. `--until "2026-09-08 07:30"`
+names one exact moment; one already past is refused rather than rolled forward a
+day, because a dated stop time before the run starts is a typo.
+
+`--hours` still works and still means a duration. Prefer `--until`: a duration is
+arithmetic you do once, at launch, against a number that was only ever standing in
+for a time of day, and it starts decaying the moment you compute it - the ten
+minutes between writing `--hours 8` and pressing return come off the end of the
+run. It also does not survive a delay. A plan written at 22:00 and launched at
+01:00 keeps its meaning under `until` and quietly loses three hours of night
+under `hours`.
+
+Four sources can set the clock, and they resolve in this order:
+
+    --until (CLI)  >  --hours (CLI)  >  run.until (spec)  >  run.hours (spec)
+
+The command line beats the spec first, and only then does `until` beat `hours`
+within a level - so a `--hours` you typed is never made inert by an `until`
+sitting in the plan file. The banner names which source won and the absolute time
+it resolved to, and so does the `STOP:` line when the clock ends the run:
+
+    the clock: --until 07:30 - no step is STARTED after 2026-09-08 07:30
+    (8.4 h from now). A step already running is never interrupted by it.
 
 ### Build steps
 
@@ -378,7 +403,7 @@ Then, per `run.on_wall`:
 - **`stop`.** The run ends there and every remaining step is left pending. Use it
   when nobody will be up to benefit from a resume.
 
-**Parked time does not extend the stop time.** `--hours` is a promise about when
+**Parked time does not extend the stop time.** The stop time is a promise about when
 you can look, not a quantity of compute you are owed, so a long wall eats into the
 night's work rather than pushing the run into your morning. `SUMMARY.md` states
 how much of the run went to waiting, over how many probes and at what cost, so the
@@ -550,7 +575,8 @@ where the run directory is and that the tree is off limits.
 | key | default | meaning |
 |---|---|---|
 | `name` | required | names the output directory `overnight/runs/<name>/` |
-| `hours` | 6 | stop STARTING steps after this many hours; `--hours` overrides |
+| `until` | - | stop STARTING steps at this time: `"07:30"` for the next 07:30, or `"2026-09-08 07:30"`. Preferred over `hours` |
+| `hours` | 6 | stop STARTING steps after this many hours. Used only when there is no `until` |
 | `attempts` | 3 | build attempts before STUCK |
 | `worker_timeout_min` | 90 | kill a build worker after this many minutes |
 | `stall_min` | 10 | kill a worker whose log has not grown for this many minutes (0 disables) |
@@ -648,7 +674,8 @@ step id.
 |---|---|
 | `--spec <path>` | required. The steps file. Give an ABSOLUTE path |
 | `--repo <dir>` | the repository root. Default: found by walking up from the spec |
-| `--hours <n>` | overrides `run.hours` |
+| `--until <time>` | when to stop STARTING steps: `07:30` for the next 07:30, or `2026-09-08 07:30`. Beats `--hours` and beats the spec |
+| `--hours <n>` | overrides `run.hours`. Superseded by `--until`; still works |
 | `--on-wall park\|stop` | overrides `run.on_wall`: what to do when the workers stop answering entirely |
 | `--wall-threshold <n>` | overrides `run.wall_threshold` |
 | `--park-poll-min <n>` | overrides `run.park_poll_min` |

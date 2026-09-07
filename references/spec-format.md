@@ -8,7 +8,11 @@ By convention the file lives at `<project>/overnight/steps.yaml`.
 ```yaml
 run:
   name: night-2                  # output goes to overnight/runs/night-2/
-  hours: 7                       # stop STARTING steps after this many hours
+  until: "07:30"                 # stop STARTING steps at this time. `HH:MM` is
+                                 # its next occurrence, so this typed at 23:00
+                                 # means tomorrow morning; or `YYYY-MM-DD HH:MM`
+                                 # for one exact moment. Preferred over `hours`,
+                                 # which decays between planning and launching
   attempts: 3                    # build attempts before STUCK
   worker_timeout_min: 90         # default hard kill per worker
   budget_usd_per_step: 40        # optional; --max-budget-usd on each worker, and

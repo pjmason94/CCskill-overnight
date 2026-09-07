@@ -7,15 +7,40 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Added
 
+- **The clock is a time of day now, not a duration.** `--until 07:30` stops the
+  runner STARTING new steps at the next 07:30 - tomorrow's, if today's has
+  passed - and `--until "2026-09-08 07:30"` names one exact moment. `run.until`
+  sits in the spec beside `run.hours`. A step already running is still never
+  interrupted by the clock.
+
+  `--hours` asked the operator to convert the constraint they actually have -
+  "results by 07:30" - into a duration, in their head, last thing at night. The
+  conversion then decayed: the minutes between computing it and pressing return
+  came off the end of the run, and a scheduled launch that fired late, or a
+  relaunch after a refusal on a dirty tree, overshot the morning by exactly the
+  delay - silently, because nothing in the run knew what time had been meant.
+
+  Four sources can set the clock, resolving `--until` (CLI) > `--hours` (CLI) >
+  `run.until` > `run.hours`. The command line beats the spec first, and only
+  then does `until` beat `hours` within a level, so an `until` sitting in the
+  plan file can never make a typed `--hours` inert. The banner and the `STOP:`
+  line both name which source won and the absolute time it resolved to. A dated
+  stop time already in the past is refused rather than rolled forward a day,
+  with a sentence rather than a traceback.
+
+  New self-test section 24, twenty checks. **The clock had no test at all before
+  this** - and it is the one path that can end a run with steps still pending
+  and no failure to show for it.
+
 - **The self-test can now run part of itself.** `python selftest.py --list` names
-  the twenty sections, what each needs before it, and how many checks each makes.
+  the twenty-two sections, what each needs before it, and how many checks each makes.
   `--only 13,17` runs those plus anything they depend on; `--from 17` runs the
   rest of the suite. A partial run prints `SELFTEST PARTIAL OK` and **never**
   `SELFTEST PASS`, so it cannot be mistaken for the gate a launch requires.
 
-  The suite is thirteen minutes, which is not a test loop, and the honest
+  The suite is fifteen to twenty minutes, which is not a test loop, and the honest
   consequence of paying it on every iteration is that it gets skipped. Fifteen of
-  the twenty sections already built their own repository and stood alone; the four
+  the sections already built their own repository and stood alone; the four
   that read a fixture an earlier section left in a particular state now declare
   it, and asking for one of those runs its prerequisites too rather than quietly
   running a subtly different test. A run also ends with a table of where its time
