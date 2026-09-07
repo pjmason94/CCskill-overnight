@@ -2,6 +2,10 @@
 
 What is not built yet. Each item names why it matters and what it costs.
 
+**Which of these are in the next release, in what order, and what each still
+needs decided: [`plan-v1.0.2.md`](plan-v1.0.2.md).** This file stays the argument
+for *why* an item matters; that one is the sequence and the open questions.
+
 **`FIELD-REPORT-2026-09-06.md` is the first real-conditions evidence this project
 has, and it outranks everything below.** Its defect 1 - `clean_tree` failing a
 step for a file the preamble told the worker to leave alone - is the only thing
