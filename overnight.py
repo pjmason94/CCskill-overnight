@@ -223,12 +223,54 @@ class Log:
         self.handle.write(line + "\n")
         self.handle.flush()
         if echo:
-            print(line, flush=True)
+            try:
+                print(line, flush=True)
+            except UnicodeEncodeError:
+                # THE CONSOLE CANNOT REPRESENT SOMETHING A WORKER WROTE, and that
+                # must never end a run. On 2026-09-07 it did: a worker's own
+                # summary carried a `<=` sign, the 02:00 scheduled task ran under
+                # cmd.exe at cp1252, and the runner died HERE - after the worker
+                # had finished and committed, before the outcome was recorded. The
+                # work survived, orphaned on a scratch branch, and the plan said
+                # nothing had happened.
+                #
+                # Worker text is arbitrary and the console's encoding belongs to
+                # whoever launched the run, so the only safe assumption is that
+                # this line may be unprintable. The FILE already has it in full -
+                # it is opened utf-8 above - so nothing is lost by degrading the
+                # echo. main() also sets errors="replace" on the stream, which
+                # normally makes this path unreachable; it is kept because a
+                # stream that cannot be reconfigured is exactly the one that fails.
+                enc = getattr(sys.stdout, "encoding", None) or "ascii"
+                print(line.encode(enc, "replace").decode(enc, "replace"), flush=True)
 
     def close(self):
         if self.handle is not None:
             self.handle.close()
             self.handle = None
+
+
+def forgiving_console():
+    """Never let an unprintable character end a run.
+
+    A run's stdout belongs to whoever launched it: an interactive PowerShell is
+    usually utf-8, Task Scheduler's cmd.exe is cp1252, and a redirect to a file
+    takes the locale. The runner echoes worker-written text into that stream, and
+    worker text is arbitrary - a `<=`, an accented name, a tick. Under cp1252 the
+    default `strict` errors turn that into a UnicodeEncodeError that unwinds the
+    whole run.
+
+    So the ECHO is made lossy rather than fatal. The log file is opened utf-8
+    independently and keeps every character, so this costs nothing but a `?` on a
+    console that could not have shown the character anyway.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # Not a reconfigurable TextIOWrapper - a StringIO under a test, a
+            # closed stream. Log.__call__ carries the fallback for exactly this.
+            pass
 
 
 def child_env(extra=None):
@@ -2586,6 +2628,9 @@ def print_progress(where, which=""):
             print("    " + line)
     return 0
 def main():
+    # FIRST, before anything can print: a scheduled run's console is cp1252 and
+    # every line the runner echoes may carry worker-written text.
+    forgiving_console()
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--spec", default="", help="path to the steps YAML")

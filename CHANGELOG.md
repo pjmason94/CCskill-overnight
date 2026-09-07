@@ -5,6 +5,30 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A character the console could not print no longer ends the run.** The runner
+  echoes worker-written text to stdout, and a worker's summary carrying `<=`
+  killed a live 02:00 scheduled run on 2026-09-07: Task Scheduler's `cmd.exe`
+  runs at cp1252, Python's default `strict` errors raised `UnicodeEncodeError`
+  inside `Log.__call__`, and the exception unwound the whole run - *after* the
+  worker had finished and committed, but *before* the outcome was recorded. The
+  work survived orphaned on its scratch branch while the plan said nothing had
+  happened, which is the worst shape a failure can take: the morning cannot see
+  it.
+
+  `main()` now sets `errors="replace"` on stdout and stderr, and `Log.__call__`
+  carries a fallback for a stream that cannot be reconfigured. The echo is lossy;
+  `run.log` is opened UTF-8 independently and still holds every character, so
+  nothing is lost but a `?` on a console that could not have shown the character
+  anyway. `tools/progress.py` got the same treatment - it prints lines lifted
+  straight out of `run.log`.
+
+  This could never have been fixed by writing careful ASCII in this repository:
+  the console's encoding belongs to whoever launched the run, and worker text is
+  arbitrary. Note it is invisible from an interactive PowerShell, which is UTF-8 -
+  the self-test case pins `PYTHONIOENCODING=cp1252` deliberately.
+
 ### Added
 
 - **A circuit breaker for the usage wall, and a run that waits it out rather

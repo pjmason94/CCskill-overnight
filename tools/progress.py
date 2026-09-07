@@ -146,6 +146,16 @@ def line(root):
 
 
 def main(argv):
+    # The lines printed below are lifted from `run.log`, so they carry whatever a
+    # WORKER wrote - a `<=`, an accent, a tick. Under a cp1252 console (Task
+    # Scheduler's cmd.exe) the default `strict` errors make that a crash, which is
+    # a poor answer to "how is it going". Lossy beats fatal; see forgiving_console
+    # in overnight.py, where the same thing ended a live run on 2026-09-07.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
     roots = argv[1:]
     if not roots:
         sys.exit(__doc__.strip().splitlines()[2].strip())

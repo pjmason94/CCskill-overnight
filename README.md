@@ -1113,6 +1113,15 @@ tree yourself: the runner records the attempt as failed and moves on.
 discarded; `git cherry-pick <tag>` restores one. `discarded-commits.md` in the
 step's directory says what each was.
 
+**A scheduled run died with `UnicodeEncodeError`, mid-step** - fixed. The runner
+echoes worker-written text, Task Scheduler's `cmd.exe` runs at cp1252, and a
+worker summary carrying `<=` used to raise inside the log call and unwind the run.
+Both streams now degrade unprintable characters to `?` instead; `run.log` is UTF-8
+and keeps them in full. If you are on a build from before this fix, look for work
+stranded on a scratch branch - the crash could land after a worker committed but
+before the outcome was recorded, so the plan will not mention it. `git branch
+--list "overnight/*"` then `git log <branch>` finds it.
+
 **The self-test fails** - `OVERNIGHT_KEEP=1 python selftest.py` keeps the scratch
 repository and prints its path, and the run.log tail is printed on failure.
 

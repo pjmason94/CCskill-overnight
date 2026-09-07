@@ -1044,6 +1044,48 @@ def main():
         check("the one-line report says PARKED, not the step it stopped on",
               "PARKED (waiting for the account, not stuck)" in one, one)
 
+        print("16. a worker's text cannot be printed: degrade, never die")
+        # THE CRASH OF 2026-09-07. A worker's own summary carried a `<=`; the
+        # 02:00 scheduled task ran under Task Scheduler's cmd.exe at cp1252; the
+        # runner died in `print`, in Log.__call__, AFTER the worker had finished
+        # and committed but BEFORE the outcome was recorded. The work survived
+        # orphaned on a scratch branch and the plan said nothing had happened -
+        # the worst shape a failure can take, because the morning cannot see it.
+        #
+        # The console's encoding belongs to whoever launched the run and worker
+        # text is arbitrary, so this can never be fixed by writing careful ASCII
+        # in this repository. It is fixed by making the ECHO lossy.
+        uni = make_repo(root / "cp1252")
+        (uni / "overnight" / "steps.yaml").write_text(DEFAULT_ISO_SPEC, encoding="utf-8")
+        sh(uni, "git", "add", "-A")
+        sh(uni, "git", "commit", "-q", "-m", "unicode spec")
+        uscen = root / "scenario-cp1252.json"
+        uscen.write_text(json.dumps({"s1": ["pass-unicode"]}), encoding="utf-8")
+        uenv = dict(os.environ)
+        uenv["OVERNIGHT_FAKE_SCENARIO"] = str(uscen)
+        # THE WHOLE POINT OF THE CASE. Not a decoration: with utf-8 here, as every
+        # other case in this file uses, the defect is invisible.
+        uenv["PYTHONIOENCODING"] = "cp1252"
+        done = subprocess.run(
+            [sys.executable, "-u", str(RUNNER), "--spec", "overnight/steps.yaml",
+             "--fake-worker", str(FAKE)],
+            cwd=uni, env=uenv, capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
+        check("a cp1252 console does not kill the run",
+              "UnicodeEncodeError" not in done.stdout + done.stderr,
+              (done.stdout + done.stderr)[-500:])
+        check("...the step still completes and is recorded",
+              ledger(uni).get("s1", {}).get("outcome") == "PASS",
+              str(ledger(uni).get("s1")))
+        check("...the run reaches its end rather than unwinding",
+              done.returncode == 0, done.stdout[-300:])
+        # The FILE is opened utf-8 independently, so degrading the echo costs
+        # nothing: what the worker actually said is still on disk in full.
+        ulog = (uni / "overnight" / "runs" / "default-iso" / "run.log").read_text(
+            encoding="utf-8")
+        check("...and run.log keeps the characters the console could not show",
+              "\u2264" in ulog and "\u00e9" in ulog, ulog[-300:])
+
         if failures:
             print("\n--- run.log tail ---")
             print(log[-4000:])

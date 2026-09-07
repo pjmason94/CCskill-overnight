@@ -34,6 +34,9 @@ Behaviours:
                 The key for a park probe is `_probe`, so a scenario can say
                 ["wall", "wall", "probe-ok"] to make the account come back.
   probe-ok      answer a park probe normally (the default for kind `probe`)
+  pass-unicode  pass, but report a summary the console may not be able to print
+                (a `<=`, an accent, a tick), which is what a real worker writes
+                and what killed a live run under Task Scheduler's cp1252 console
   commit-wrong  commit real work but not the test the gate demands
   foreign-commit  a THIRD PARTY commits to the branch during the step, gate fails
   pass+main:unrelated   the worker passes in its own tree while a third party
@@ -124,7 +127,7 @@ def main():
         # signal the runner watches for, and it is what the real CLI does when the
         # five-hour window closes: it says so in prose and dies, having done no
         # work and reported no cost.
-        sys.stdout.write("You've hit your session limit · resets 12:40am"
+        sys.stdout.write("You've hit your session limit \u00b7 resets 12:40am"
                          " (Europe/London)\n")
         sys.stdout.flush()
         sys.exit(1)
@@ -163,13 +166,13 @@ def main():
             git_as_stranger(main, "add", "-A")
         if main_meddle != "stray":
             git_as_stranger(main, "commit", "-q", "-m", "a commit from another window")
-    if behaviour in ("pass", "fail-dirty"):
+    if behaviour in ("pass", "fail-dirty", "pass-unicode"):
         tests = repo / "tests"
         tests.mkdir(exist_ok=True)
         path = tests / f"test_{safe}.py"
         marker = "reworked" if key.endswith("#rework") else "built"
         path.write_text(f"def test_{safe}():\n    assert True  # {marker}\n", encoding="utf-8")
-        if behaviour == "pass":
+        if behaviour in ("pass", "pass-unicode"):
             # BY EXPLICIT PATH, which is what a real worker's brief tells it to do.
             # With `add -A` this fixture swept up whatever else was in the tree -
             # including a file the operator wrote mid-step, the exact defect of
@@ -177,6 +180,13 @@ def main():
             # either, because the stray got committed instead of failing the gate.
             git(repo, "add", str(path.relative_to(repo).as_posix()))
             git(repo, "commit", "-q", "-m", f"fake: {key} {marker}")
+        if behaviour == "pass-unicode":
+            # ESCAPES, not literals: this repository is ASCII-only, and the
+            # characters that break a cp1252 console are exactly the ones
+            # that render as mojibake in a diff. The runner sees the real
+            # characters; the source stays readable everywhere.
+            return result("deflection \u2264 2.5 mm over a 900 \u00d7 400"
+                          " panel; caf\u00e9 shelf checked \u2713")
         return result(f"{key}: {behaviour}")
     if behaviour == "commit-wrong":
         # Commits real work, then fails the gate anyway - the case where a reset
