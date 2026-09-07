@@ -84,16 +84,41 @@ nothing else is launching, and against work that is gateable.
 |---|---|---|---|---|---|
 | 0 | run the self-test by section | every piece after it is iterated on 13 minutes at a time otherwise | its own check-count invariant | 90 min | OM |
 | 1 | the published self-test runtime is wrong | free, and a wrong number outranks a bug | reading the clock | 15 min | SM |
-| 2 | a blocking step must declare stranded work | closes a defect that just cost a real decision | new self-test section | 45 min | OM |
-| 2a | the retry ladder | roadmap 13; near zero cost, no extra worker | new self-test section | 45 min | OM |
+| 2 | stranded work is **retested**, not just reported | closes a defect that just cost a real decision | new self-test section | 60 min | OM |
 | 3 | `--until` | roadmap 11; the largest piece | new self-test section - the clock has **none** today | 75 min | OM |
-| 4 | `expected_min` refuses a step it cannot finish | roadmap 3; needs 3 | new self-test section | 45 min | OM |
+| 4 | `expected_min` is mandatory, and it schedules | roadmap 3; needs 3 | new self-test section | 60 min | OM |
 | 5 | the plan seed | roadmap 7; docs only, so it lands last | nothing - and the commit says so | 45 min | OH |
 | 6 | release notes and the tag | locks the version | `SELFTEST PASS` | 45 min | OH |
 
-Pieces 1, 2, 2a and 3 are independent of each other. 4 depends on 3. 5 and 6 are
+Pieces 1, 2 and 3 are independent of each other. 4 depends on 3. 5 and 6 are
 last because they touch `SKILL.md` and `references/`, which are the files a new
 session reads.
+
+**All five open decisions were taken on 2026-09-07** and are written into the
+sections below as settled. Two of them replaced the recommendation that was
+offered, and both are better:
+
+| | asked | decided |
+|---|---|---|
+| 1 | should stranded work change the verdict, or only the note? | **neither - retest it.** Run the step's gate against the stranded work; passing work merges as a successful re-run would, failing work fails |
+| 2 | `--until` vs `--hours` precedence | `--until` wins |
+| 3 | a step that will not fit: stop, or skip ahead? | **skip to a smaller one**, assuming no dependency - see the forward reference below |
+| 4 | a step with no estimate: run it or refuse? | **it never reaches execution.** An unsized step is too complex and must fail the PLANNING cycle |
+| 5 | the retry ladder (roadmap 13) in 1.0.2? | **no - deferred**, see below |
+
+### Deferred, and what they are waiting for
+
+**Roadmap 13, the retry ladder, is not in 1.0.2.** It is being reworked as part
+of a larger piece on **step dependencies - what feeds into a step and what a step
+feeds into** - and it waits on the A/B test reports covering FinKit's
+`5b-report` specifically, which is the case the roadmap entry is argued from.
+Nothing in this plan should pre-empt that design.
+
+**That same dependency work is what makes piece 4's skipping safe.** Skipping a
+step that will not fit and running a later one assumes the later one does not
+depend on it, and today the plan carries nothing that could confirm that. Until
+the dependency work lands, the assumption is unverifiable - so piece 4 makes it
+loud rather than silent, and the section says how.
 
 **The working rule these serve** (Paul, 2026-09-07): *the self-test sections run
 during a piece of work are the ones relevant to it; the FULL suite runs before a
@@ -171,7 +196,7 @@ not seconds, and it grows as those are added to.
 
 ---
 
-## 2. A blocking step must declare work stranded on its scratch branch
+## 2. Work stranded on a scratch branch is retested, not reported
 
 **The evidence.** Woodwork Guru, 2026-09-07. `b3-4-nested-drawer`'s worker
 finished at 02:32:39 - exit 0, 11.3 min, $5.12, committed `4b2156e`, tree clean -
@@ -197,59 +222,47 @@ already exists.
   already decided what to do, which is the one moment the information was worth
   having.
 
-**The change.** At the point a blocking outcome is recorded, ask whether
-`scratch_branch(step_id)` exists and holds commits that are not on the
-operator's branch - `commits_since(base, tip=branch)` already answers it - and if
-so name them in the ledger note and in `SUMMARY.md`, with the sha and the count.
+**The change - decided 2026-09-07. Do not report it, TEST it.**
 
-**Decision needed.** Does stranded work change the *outcome*, or only the *note*?
+Reporting stranded work and leaving the operator to decide was the weaker
+answer, and it was rejected for the right reason: **the gate is already the
+arbiter of whether work is good**, everywhere else in this runner. Work that
+passes its gate should merge exactly as a successful re-run's work would; work
+that fails should fail. Neither needs a person, and neither needs a new verdict.
 
-> **Recommendation: the note and the summary only.** Making it a new blocking
-> outcome, or reusing `NEEDS MERGE`, would change resume semantics: `NEEDS MERGE`
-> is deliberately excluded from `RERUN_OUTCOMES` because re-running would do the
-> work twice. For b3-4 re-running is *correct* - the commit was never gated
-> against this run's base - so the operator needs the *fact*, not a different
-> resume rule. Changing the outcome would take the choice away from them.
+So when a step is about to run and its scratch branch holds commits that are not
+on the operator's branch:
 
-**Proof.** A new self-test section: a step blocked with commits left on its
-scratch branch names them; a step blocked with a clean branch says nothing extra.
-Show it failing against the current runner first.
+1. put the stranded work in a worktree and **replay it onto the current base**;
+2. if it will not replay, that is `NEEDS MERGE` - the verdict that already exists
+   for exactly this, and the only case a person is needed;
+3. if it replays, **run the step's gates against it**;
+4. gates pass -> integrate and record `PASS`, with a note saying the work came
+   from an earlier run and no worker was spent on it;
+5. gates fail -> discard it exactly as today (tagged `rescue/...`, listed in
+   `discarded-commits.md`) and run the step normally.
 
----
+**The timing is the whole trick, and it is easy to get wrong.** This must happen
+**before** `worktree add -B` moves the scratch branch, because that resets it to
+base and the stranded commits become unreachable. The right home is
+[`rescue_scratch_branch`](../overnight.py#L976), which is already the one place
+that detects this exact condition - it just tags and resets today, and should
+test first and only tag what fails.
 
-## 2a. The retry ladder - roadmap 13
+**Why this is worth more than the reporting version.** In the b3-4 case it turns
+a lost step into a free one: 11 minutes and $5.12 of work that already passed its
+gates gets merged without spending a worker at all. Reporting it would still have
+cost a full re-run.
 
-Added to the roadmap after this plan was first written; folded in because it is
-cheap, it needs no extra worker, and the evidence for it is already measured.
+**One thing to be careful of.** The stranded commit was built against an *older*
+base. Replaying it onto the current base and then gating is what makes the test
+honest - gating it on its own old branch would prove only that it used to work.
+Step 1 is not optional.
 
-Attempt 2 is handed the same brief as attempt 1, byte for byte, and told nothing
-about why attempt 1 failed - the roadmap has the log lines showing identical
-character counts across attempts. The diagnostic worker runs only after the
-**second** failure, so the first retry is a pure re-roll.
-
-**The runner already holds every fact needed.** It knows which gate failed, it
-has the gate's output, and it has quarantined whatever untracked files the
-attempt left behind. None of that needs a model. The ladder:
-
-| attempt | given |
-|---|---|
-| 1 | the brief |
-| 2 | the brief + the failed gate's **name** and **output**, truncated, stated as fact |
-| 3 | the brief + `remediation.md` from the diagnostic worker, as now |
-
-**Decision needed.** Nothing structural, but one judgement worth stating rather
-than discovering: attempt 2's addition is deliberately **not** the predecessor's
-code, which would anchor the retry on a design that has already failed once. The
-considered read of what went wrong stays at attempt 3, where a worker is paid for
-it.
-
-**Where it lands.** `build_brief(step, attempt, remediation, rework)` already
-takes the attempt number, so the hook exists; the failed gate's name and output
-have to be carried from the gate runner into the next attempt's brief.
-
-**Proof.** A new self-test section: attempt 2's brief contains the failing gate's
-name and output; attempt 3's contains the remediation, as now. Both are already
-assertable - `run_worker` writes the full brief into every worker log.
+**Proof.** A new self-test section, shown failing first: stranded work whose
+gates pass is merged and the step records `PASS` with no worker spawned; stranded
+work whose gates fail is tagged, discarded, and the step runs normally; stranded
+work that will not replay is `NEEDS MERGE`.
 
 ---
 
@@ -275,11 +288,11 @@ have is where it lands.
 - `README.md` lines 222, 374, 528, 626 - the clock, the parking rule, the spec
   key table and the flag table
 
-**Decisions needed.**
+**Decided 2026-09-07.**
 
-1. **Precedence when both are given.** Recommendation: `--until` wins over
-   `--hours` wherever both appear, CLI over spec, and the banner says which was
-   used and what it resolved to. Never silently pick one.
+1. **Precedence when both are given: `--until` wins**, wherever both appear, CLI
+   over spec, and the banner says which was used and what it resolved to. Never
+   silently pick one.
 2. **Resolution.** `07:30` means the next occurrence of 07:30. Launched at 07:00
    that is 30 minutes, not 24.5 hours. Log it **once, as an absolute datetime**,
    so the log is never ambiguous about which 07:30 was meant.
@@ -293,7 +306,7 @@ own terms: a deadline already passed must start no step and must say so.
 
 ---
 
-## 4. `expected_min` refuses a step it cannot finish
+## 4. `expected_min` is mandatory, and it schedules
 
 **Depends on 3** - a duration cannot answer "will this fit", a deadline can.
 
@@ -302,28 +315,63 @@ Today `expected_min` is read in exactly one place,
 `SUMMARY.md`. Nothing consumes it for scheduling. The roadmap's target line is
 `not starting b5-2 (est 18 min, 14 min left)`.
 
-**Three decisions, and the second is the one that matters.**
+### 4a. An unsized step fails PLANNING, not execution
 
-1. **The outcome.** Recommendation: reuse **`NOT RUN`**. It already means "no
-   worker read the code" ([`overnight.py:126`](../overnight.py#L126)), it is in
-   `RERUN_OUTCOMES` and out of `BLOCKING_OUTCOMES`, which is exactly right - a
-   resume picks it up and nobody is woken. The note must distinguish it from a
-   usage-wall casualty, which is the other thing that produces `NOT RUN`.
-2. **Stop, or skip to something that fits?** Skipping ahead reorders the plan,
-   and later steps usually depend on earlier ones, so a "helpful" skip can build
-   on ground that was never laid. Recommendation: **stop starting entirely**,
-   matching the deadline's existing behaviour. The alternative - honour the
-   spec's own ordering but let an independent later step run - is defensible and
-   is what roadmap item 1 would eventually want, but it needs the dependency
-   information the plan does not carry today.
-3. **A step with no `expected_min`.** Recommendation: **start it**, and say in
-   the log that it was unsized so the refusal could not be evaluated. Refusing an
-   unsized step would silently drop work over a missing field. The planning
-   procedure already argues every build step should carry one; this makes the
-   absence visible rather than fatal.
+**Decided 2026-09-07, and it replaced the recommendation offered.** The proposal
+was to run an unsized step anyway and log that it could not be checked. The
+decision is stronger and better placed: *a step that cannot be given a time
+estimate is too complex, and that is a planning failure, not an execution one.*
+
+The evidence agrees. Across FinKit's 36-step ledger, every build step carrying an
+estimate finished in 8-24 minutes; every step carrying none ran 28, 33, 52, 53,
+54, 119 and 151. Writing a number does not make work faster - a step nobody sized
+is a step nobody scoped. Letting one through to execution just moves the failure
+somewhere it cannot be fixed.
+
+**So `expected_min` becomes required on any build step still to run**, validated
+when the spec loads, refusing with the offending step ids named.
+
+**Checked before deciding, because a hard refusal could have stranded live
+plans:**
+
+| project | build steps | unsized | unsized **and still to run** |
+|---|---|---|---|
+| FinKit | 30 | 13 | **0** |
+| Woodwork Guru | 32 | 0 | **0** |
+
+All thirteen of FinKit's unsized steps have already run and recorded `PASS`.
+Validating **only steps still to run** therefore costs nothing today, and both
+plans load unchanged - no rebuild needed. It is also the principled line: a
+completed step's estimate is moot because its *actual* is recorded, and rewriting
+history to satisfy a new rule teaches nobody anything.
+
+The planner must also stop emitting unsized steps - `references/planning.md`
+already argues for it, and this makes it enforceable rather than advisory.
+
+### 4b. A step that will not fit is skipped, not the end of the run
+
+**Decided 2026-09-07, and it replaced the recommendation offered.** Stopping the
+run was proposed on the grounds that skipping could build on ground never laid.
+The decision is to **skip to a smaller step that fits, assuming no dependency**,
+because stopping wastes a night's remaining time over a hazard that is about to
+be addressed properly.
+
+**The assumption must be loud, because nothing can currently verify it.** The
+plan carries no record of what feeds a step or what a step feeds - that is coming
+as a separate piece of rework (see *Deferred* above), and it is what will make
+this safe rather than merely reasonable. Until then:
+
+- the skipped step records **`NOT RUN`** - it already means "no worker read the
+  code" ([`overnight.py:126`](../overnight.py#L126)), it resumes cleanly and it
+  wakes nobody. The note must name both figures and distinguish it from a
+  usage-wall casualty, which is the other thing producing `NOT RUN`;
+- the log and `SUMMARY.md` must say **the plan order was departed from** - which
+  step was skipped and which ran in its place. A reordering nobody can see is the
+  failure mode here, and making it visible is the cheap half of the fix.
 
 **Proof.** A new self-test section: a step whose estimate exceeds the remaining
-time is `NOT RUN` with a note naming both figures, and one that fits still runs.
+time is `NOT RUN` with a note naming both figures; a later, smaller step still
+runs; and the summary says the order changed.
 
 ---
 
@@ -370,6 +418,8 @@ at the tag and is never edited again.
 
 | roadmap item | why not |
 |---|---|
+| 13 - the retry ladder | deferred 2026-09-07. Being reworked inside the larger **step dependency** piece, and waiting on the A/B test reports for FinKit `5b-report` - the case it is argued from |
+| step dependencies - what feeds a step, what a step feeds | a separate piece of rework, not yet written up. It is what makes 4b's skipping provably safe rather than merely reasonable |
 | 1 - the expected-value triage | the decision hook has to exist first; there is no structured way for a worker to raise a judgement today |
 | 4 - cross-platform verification | needs a Linux or macOS box. Nothing on this machine can do it |
 | 5 - packaging | by its own entry, it does not matter until somebody wants the skill without cloning |
