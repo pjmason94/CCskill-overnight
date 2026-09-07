@@ -244,35 +244,6 @@ pays its own prefix and does the same reading, so it only saves what the reading
 would have left behind, and a parallel fan-out costs more than it saves. It needs
 a measured experiment on one real step first.
 
-## 7. A plan seed: `/overnight plan <file>`
-
-**The idea.** The planner reads documents the user names - a roadmap, an issue
-list, a design note - proposes the step list from them, and interviews only on
-what it cannot infer from them. Today stage 1 starts from the project and the
-conversation, so a user who has already written down what they want says it
-twice.
-
-**A path, not a format.** The argument names existing files; the skill does not
-define a "build plan" shape for the user to write to. Requiring a shape -
-heading per step, bullet per gate - would mean that by the time somebody has
-written it they have written `steps.yaml`, and the project would then carry two
-documents to keep in sync, which a reflect step rewriting the plan mid-run makes
-worse. Any prose the user already has is a legitimate seed.
-
-**What it does not save.** The gates. A roadmap says what should be true, almost
-never how you would know it is - and turning that into a command that exits 0 is
-the slow half of planning and the half that makes a run unattendable. The seed
-saves the enumeration, not the judgement.
-
-**The one rule that keeps it honest.** The planner may merge, split, reorder or
-drop what it reads - but it must then LIST what it dropped and why, at the top of
-the proposal. A seed that is silently filtered is worse than no seed: the user
-believes their document is the plan.
-
-**What it costs.** Small, and stage 1 only: an argument through `SKILL.md`, a
-section in `references/planning.md`, no runner change and so nothing that can
-affect a live run.
-
 ## 4. Cross-platform verification
 
 Developed and run on Windows. `fresh_shell` branches - PowerShell with the PATH
@@ -303,6 +274,17 @@ decisions that followed, would be worth more than any amount of prose about it.
 
 ## Done
 
+- **A plan seed: `/overnight plan <path>`** (originally item 7). The
+  planner reads documents the user already has - a roadmap, an issue list, last
+  run's decisions file - proposes the steps from them, and interviews only on
+  what they did not answer. A PATH, not a format: requiring a shape would mean
+  that by the time somebody had written it they had written `steps.yaml`, and
+  the project would carry two documents to keep in sync. It does not save the
+  gates, which is the slow half. The rule that keeps it honest: the planner may
+  merge, split, reorder or drop what it reads, but must LIST what it dropped and
+  why at the top of the proposal - a silently filtered seed is worse than none,
+  because the user believes their document is the plan. Docs only; no runner
+  change and so no self-test.
 - **`expected_min` is required, and it schedules** (the scheduling half
   of item 3). A build step still to run without an estimate refuses the plan at
   load, naming every offending step: a step nobody can size is a step nobody

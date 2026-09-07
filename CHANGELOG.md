@@ -7,6 +7,32 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Added
 
+- **`/overnight plan <path>` plans from documents you have already written.**
+  Name a roadmap, an issue list, a design note or last run's
+  `DECISIONS-PENDING.md`, and the planner reads them, proposes the step list from
+  them, and interviews only on what they did not answer. A user who has already
+  written down what they want should not have to say it twice.
+
+  It takes a **path, not a format**. Requiring a shape - a heading per step, a
+  bullet per gate - would mean that by the time somebody had written it they had
+  written `steps.yaml`, and the project would then carry two documents to keep in
+  sync, which a reflect step rewriting the plan mid-run makes worse. Any prose
+  you already have is a legitimate seed.
+
+  It does not save you the gates. A roadmap says what should be true and almost
+  never how you would know it is; turning that into a command that exits 0 is the
+  slow half of planning and the half that makes a run unattendable. The seed
+  saves the enumeration, not the judgement.
+
+  **The planner must list what it dropped, and why, at the top of its proposal** -
+  and the same for anything it merged or split. A seed that is silently filtered
+  is worse than no seed, because you handed over a document and believe it is the
+  plan; three of its eleven items quietly missing is something you would discover
+  in the morning, having reviewed a plan you thought you already knew.
+
+  Documentation only - `SKILL.md` and `references/planning.md`. No runner change,
+  and so nothing here can affect a run in flight, and no self-test covers it.
+
 - **`expected_min` is required on every build step still to run, and the clock
   now uses it.** A plan with an unsized build step is refused at load, naming
   every offending step so one edit fixes it. Steps that have already run are

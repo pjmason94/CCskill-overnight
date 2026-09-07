@@ -51,11 +51,54 @@ Read, in this order:
 Then say back, in five lines, what you understand the state to be. A wrong
 reading surfaces here for free or at 03:00 for real money.
 
+## 1a. If the user named a seed document, read it FIRST
+
+`/overnight plan <path> [<path>...]` names documents the user has already
+written - a roadmap, an issue list, a design note, a review's findings, last
+run's `DECISIONS-PENDING.md`. Read them before the interview and propose the step
+list from them. A user who has already written down what they want should not
+have to say it twice.
+
+**A path, not a format.** The argument names files that already exist. Do not
+ask the user to write to a shape - a heading per step, a bullet per gate -
+because by the time somebody has done that they have written `steps.yaml`, and
+the project then carries two documents to keep in sync, which a reflect step
+rewriting the plan mid-run makes worse. Any prose the user already has is a
+legitimate seed. If a named path does not exist, say so and ask rather than
+guessing at a near-miss.
+
+**What the seed does NOT save: the gates.** A roadmap says what should be true;
+it almost never says how you would know it is. Turning that into a command that
+exits 0 is the slow half of planning and the half that makes a run unattendable,
+and it is still yours to do in section 4. The seed saves the enumeration, not the
+judgement. Say this to the user if they expect a plan to fall out whole.
+
+**You may merge, split, reorder or drop what you read.** A document written for a
+human reader is not a step list: two of its bullets may be one step, one may be
+five, and some will be out of scope for a night or not yet decidable.
+
+**THE ONE RULE THAT KEEPS IT HONEST. List what you dropped, and why, at the top
+of the proposal** - before the steps, not in a footnote:
+
+> From `docs/ROADMAP.md` I did not carry: item 4 (needs a decision you have not
+> taken - which serialiser); item 9 (no gate I can write without a fixture that
+> does not exist yet); item 11 (one line, and it belongs in the step for item 2).
+
+A seed that is silently filtered is worse than no seed. The user handed you a
+document and believes it is the plan; if three of its eleven items quietly did
+not make it, they find out in the morning, having reviewed a plan they thought
+they already knew. Merges and splits get the same treatment - say which of their
+items became which of your steps.
+
+Then go on to the interview, and ask only what the documents did not answer.
+
 ## 2. Interview the user
 
 Batch the questions; do not ask serially. What you need:
 
-- **What should be true in the morning?** Push for deliverables, not areas.
+- **What should be true in the morning?** Push for deliverables, not areas. If a
+  seed document answered this, do not ask it again - say what you took from the
+  document and ask only what it left open.
 - **What must NOT be touched?** Modules, files, public interfaces, data.
 - **When will you be back at the desk?** This sets `--until`, the time after
   which no new step is STARTED. Ask for the time, not a number of hours - the

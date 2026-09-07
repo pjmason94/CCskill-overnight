@@ -213,6 +213,15 @@ Launch it yourself, from your own shell. Claude Code's permission classifier wil
 (correctly) refuse to let a session spawn workers at `bypassPermissions` on your
 behalf.
 
+**Planning from something you have already written.** `/overnight plan <path>`
+names existing documents - a roadmap, an issue list, a design note - and the
+planner proposes the steps from them rather than asking you to say it all again.
+It is a path, not a format: any prose you already have will do. It does not save
+you the gates, which are the slow half of planning. And it must list, at the top
+of its proposal, anything it merged, split or dropped and why - a seed that is
+silently filtered is worse than no seed, because you believe your document is
+the plan.
+
 **Morning.** Read `overnight/runs/<name>/SUMMARY.md`, then every `verdict.json`
 and `remediation.md`, then `DECISIONS-PENDING.md`, and then the commits
 themselves. A gate is a floor, not a standard.

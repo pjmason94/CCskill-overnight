@@ -1,6 +1,6 @@
 ---
 name: overnight
-description: Plan, launch and report an unattended overnight run of headless Claude Code workers - build steps with gates and retries, read-only review steps with typed verdicts, reflect steps that may rewrite the remaining plan, and a git undo under all of it. Two separable stages - PLAN writes a steps spec into the current project, RUN launches it later - and the mode is inferred from the plan file, not asked for. Trigger on "/overnight", "/overnight plan", "/overnight run", "/overnight progress", "/overnight help", "set up an overnight run", "run this overnight", "prepare tonight's run", "how is the overnight run going".
+description: Plan, launch and report an unattended overnight run of headless Claude Code workers - build steps with gates and retries, read-only review steps with typed verdicts, reflect steps that may rewrite the remaining plan, and a git undo under all of it. Two separable stages - PLAN writes a steps spec into the current project, RUN launches it later - and the mode is inferred from the plan file, not asked for. Trigger on "/overnight", "/overnight plan", "/overnight plan <file>", "/overnight run", "/overnight progress", "/overnight help", "set up an overnight run", "run this overnight", "prepare tonight's run", "how is the overnight run going".
 ---
 
 # /overnight
@@ -45,6 +45,7 @@ Two modes are asked for directly rather than inferred, and skip `--mode`:
 | the user says | load |
 |---|---|
 | `/overnight progress`, "how is the run going", "what happened overnight" | `references/progress.md` |
+| `/overnight plan <path>`, "plan tonight from this roadmap" | `references/planning.md` - the paths are SEED DOCUMENTS, section 1a. Still run `--mode` first |
 | `/overnight help`, "what does overnight do" | answer from this file; offer the manual |
 
 If the user names a mode explicitly (`/overnight plan` when a plan already
