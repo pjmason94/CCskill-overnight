@@ -51,6 +51,11 @@ Behaviours:
   over-budget-late  the same trip, but AFTER the work is committed and the gates
                 will pass - a step that succeeded and merely ran out on the way
                 out, which must still be a PASS
+  over-budget-idle  the RUNAWAY: the cap is spent and the tree is byte-identical.
+                There is nothing to hand on, so it must never be continued
+  finish-the-handover  a CONTINUATION worker. It fails unless the previous
+                worker's half-built file is still in the tree AND the brief says
+                it is a continuation, so it proves the handover really happened
   commit-wrong  commit real work but not the test the gate demands
   foreign-commit  a THIRD PARTY commits to the branch during the step, gate fails
   pass+main:unrelated   the worker passes in its own tree while a third party
@@ -241,6 +246,39 @@ def main():
               "usage": {"input_tokens": 8, "cache_creation_input_tokens": 3591,
                         "cache_read_input_tokens": 889344, "output_tokens": 2460}})
         return
+    if behaviour == "over-budget-idle":
+        # THE RUNAWAY. The cap is spent and the tree is byte-identical: the worker
+        # went nowhere, confidently, for the whole budget. There is nothing to hand
+        # to a continuation, and handing one a half-built wrong thing to finish is
+        # worse than stopping - so this must NOT be continued however many
+        # continuations the run allows.
+        emit({"type": "result", "subtype": "error_max_budget_usd", "is_error": True,
+              "terminal_reason": "budget_exhausted", "num_turns": 44,
+              "duration_ms": 1500000, "total_cost_usd": 6.0004,
+              "result": f"{key}: spent the cap and wrote nothing"})
+        sys.exit(1)
+    if behaviour == "finish-the-handover":
+        # THE CONTINUATION. It refuses to do anything unless the previous worker's
+        # half-finished file is actually in front of it, which is what proves the
+        # tree was carried forward rather than reset - the single thing that makes
+        # a continuation cheaper than a retry. It also checks it was TOLD it is a
+        # continuation, because a worker that is not told will start over.
+        half = repo / "tests" / f"test_{safe}.py"
+        if not half.exists():
+            emit({"type": "user", "message": {"content": [
+                {"type": "tool_result", "is_error": True,
+                 "content": "Error: nothing was handed over - the tree was reset"}]}})
+            return result(f"{key}: nothing to continue from")
+        if "# CONTINUATION" not in brief:
+            emit({"type": "user", "message": {"content": [
+                {"type": "tool_result", "is_error": True,
+                 "content": "Error: no handover in the brief"}]}})
+            return result(f"{key}: not told it was a continuation")
+        half.write_text(f"def test_{safe}():\n    assert True  # finished by the"
+                        " continuation\n", encoding="utf-8")
+        git(repo, "add", str(half.relative_to(repo).as_posix()))
+        git(repo, "commit", "-q", "-m", f"fake: {key} finished after a handover")
+        return result(f"{key}: picked up the half-built work and finished it")
     if behaviour in ("over-budget", "over-budget-late"):
         # THE PER-STEP CAP TRIPPED. `--max-budget-usd` cuts the worker off at a
         # turn boundary, part-way through the job: here the test file is written

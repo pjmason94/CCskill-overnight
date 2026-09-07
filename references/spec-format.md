@@ -11,9 +11,15 @@ run:
   hours: 7                       # stop STARTING steps after this many hours
   attempts: 3                    # build attempts before STUCK
   worker_timeout_min: 90         # default hard kill per worker
-  budget_usd_per_step: 40        # optional; --max-budget-usd on each worker.
-                                 # A build attempt that trips it is OVER BUDGET,
-                                 # is not retried, and blocks the plan
+  budget_usd_per_step: 40        # optional; --max-budget-usd on each worker, and
+                                 # a step's own `budget_usd` overrides it. A build
+                                 # attempt that trips it is OVER BUDGET, is not
+                                 # retried, and blocks the plan
+  continuations: 0               # extra workers ONE ATTEMPT may use when the cap
+                                 # cuts one off part-way: the next gets a fresh cap
+                                 # and the tree as the last left it, so the money
+                                 # buys progress, not repetition. Turn it on beside
+                                 # a per-step budget_usd, not on its own
   isolation: worktree            # THE DEFAULT; `in-place` is the opt-out. Each
                                  # build step gets its own worktree on a scratch
                                  # branch, integrated once its gates pass, so
@@ -45,6 +51,7 @@ steps:
     effort: medium
     expected_min: 15             # recorded beside the actual; terminates nothing
     timeout_min: 40              # hard kill; about 2.5x the estimate
+    budget_usd: 6                # this step's own cap, overriding the run's
     gates:                       # this step's own, run before the universal ones
       - {cmd: python -m pytest -q tests/test_parser.py::test_handles_empty_input}
 
@@ -88,8 +95,11 @@ baseline. After the second failure a **diagnostic** worker reads a compact
 transcript of both attempts - the assistant's words and every tool error, tens of
 KB instead of megabytes - and writes `remediation.md`, which the third attempt
 ingests. Still failing: STUCK, and the run moves on. The one failure that is not
-retried is a worker cut off by `budget_usd_per_step` - that is OVER BUDGET, and
-it stops.
+retried is a worker cut off by its budget cap - if `run.continuations` allows, the
+work is handed to a fresh worker with the tree as it stands (which spends the next
+cap on the part that is not done, rather than on repeating the part that is);
+otherwise, or once the continuations are used up, the step is OVER BUDGET and
+stops. A worker that spent a whole cap and changed nothing is never continued.
 
 **review** - reads a passed commit named by `of:`, at `bypassPermissions` with
 Edit, Write and NotebookEdit disallowed, and returns a typed verdict through

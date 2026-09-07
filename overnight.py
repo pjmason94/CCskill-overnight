@@ -398,6 +398,15 @@ def load_spec(path):
             step.setdefault("on_fail", "rework")
             if step["on_fail"] not in ("record", "rework", "revert"):
                 raise SpecError(f"step {sid!r}: on_fail must be record|rework|revert")
+        # Caught at load rather than at the worker: a mistyped cap would otherwise
+        # surface as a crash in the middle of the night, several hours in.
+        if "budget_usd" in step:
+            try:
+                if float(step["budget_usd"]) <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise SpecError(f"step {sid!r}: budget_usd must be a positive number,"
+                                f" not {step['budget_usd']!r}")
         for gate in step.get("gates") or []:
             _validate_gate(gate, sid)
     for gate in run.get("gates") or []:
@@ -526,8 +535,8 @@ def render_done(entry, key_indent):
     """
     pad = " " * key_indent
     out = [f"{pad}done:\n"]
-    for key in ("outcome", "at", "sha", "attempts", "minutes", "cost_usd", "tier",
-                "note", "reworked", "of", "findings", "added", "removed"):
+    for key in ("outcome", "at", "sha", "attempts", "legs", "minutes", "cost_usd",
+                "tier", "note", "reworked", "of", "findings", "added", "removed"):
         if key not in entry or entry[key] is None:
             continue
         value = entry[key]
@@ -722,6 +731,17 @@ class Runner:
         self.stall_min = float(self.args.stall_min
                                if self.args.stall_min is not None
                                else self.run_cfg.get("stall_min", 10))
+        # How many EXTRA workers one attempt may use when the budget cuts one off
+        # part-way. The cap is per invocation, so a continuation gets a fresh one:
+        # this is the difference between spending it again on PROGRESS and spending
+        # it again on REPETITION, which is what a retry does. Default 0 - off -
+        # because an existing plan's cap is a backstop sized well above a good step
+        # (the README recommends 45), and quietly allowing a second worker would
+        # let a trip at $45 spend $90 on a plan nobody re-tuned. Continuation is
+        # what makes a SMALL per-step cap usable, so it is turned on beside one.
+        self.continuations = int(self.args.continuations
+                                 if self.args.continuations is not None
+                                 else self.run_cfg.get("continuations", 0))
         self.barren = 0            # consecutive worker invocations that produced nothing
         self.parked_seconds = 0.0  # for the summary: how much of the night went to waiting
         self.probes = 0
@@ -753,7 +773,7 @@ class Runner:
         # symptom of a step carrying more than one deliverable, and the next plan
         # can only be calibrated against numbers somebody kept.
         for key in ("sha", "attempts", "minutes", "cost_usd", "tier", "note",
-                    "reworked", "of", "findings", "added", "removed"):
+                    "legs", "reworked", "of", "findings", "added", "removed"):
             if key in fields and fields[key] not in (None, "", []):
                 entry[key] = fields[key]
         if entry.get("sha") in (None, NO_GIT_SHA):
@@ -1133,6 +1153,43 @@ class Runner:
             return NO_GIT_SHA
         return self.git("rev-parse", "HEAD")[1]
 
+    def work_since(self, base):
+        """What the tree holds that the attempt's baseline did not, as short text.
+
+        This IS the handover: the commits a cut-off worker managed to make, and the
+        files it still had open when the money ran out. Deliberately bounded - it
+        goes into the next worker's brief, and every character of a brief is
+        re-read on every one of that worker's turns, so a full diff here would be
+        charged dozens of times over.
+        """
+        if not self.has_git:
+            return ""
+        bits = []
+        code, commits = self.git("log", "--oneline", f"{base}..HEAD")
+        if code == 0 and commits.strip():
+            bits.append("Commits it managed to make:\n" + commits.strip()[:1500])
+        code, dirty = self.git("status", "--porcelain")
+        if code == 0 and dirty.strip():
+            bits.append("Left uncommitted in the tree:\n" + dirty.strip()[:1500])
+        return "\n\n".join(bits)
+
+    def tree_state(self):
+        """A cheap fingerprint of the work tree: HEAD, and everything uncommitted.
+
+        It answers one question, asked either side of a worker: did that worker
+        CHANGE anything? A worker that spent an entire budget and left the tree
+        byte-identical has produced nothing to hand on, and that is the runaway
+        signature - confidently going nowhere - as opposed to a big step that ran
+        out of money with real work on disk.
+
+        Without git there is no cheap fingerprint and no reset either, so it
+        returns None and the caller treats progress as unknowable.
+        """
+        if not self.has_git:
+            return None
+        code, out = self.git("status", "--porcelain")
+        return (self.head(), out) if code == 0 else None
+
     def commits_since(self, base, tip="HEAD", tree=None):
         """[(sha, committer email, subject)] reachable from `tip` but not from `base`.
 
@@ -1370,7 +1427,18 @@ class Runner:
         return {"model": step.get("model", defaults["model"]),
                 "effort": step.get("effort", defaults["effort"])}
 
-    def worker_argv(self, kind, tier, schema=None, disallow=()):
+    def budget_for(self, step):
+        """The cap for this step's workers - its own if it sets one.
+
+        Time has always been per-step (`timeout_min`); money was not, and one
+        run-level cap has to be sized for the plan's LARGEST step, which leaves
+        every smaller step effectively uncapped. `budget_usd` on a step is the
+        matching knob, and it is what makes the cap mean something per step
+        rather than per plan.
+        """
+        return step.get("budget_usd", self.run_cfg.get("budget_usd_per_step"))
+
+    def worker_argv(self, kind, tier, schema=None, disallow=(), budget=None):
         argv = [self.claude, "-p", "--model", tier["model"], "--effort", tier["effort"],
                 "--output-format", "stream-json", "--verbose"]
         # One merged --disallowedTools: the flag takes a list, and passing it
@@ -1394,7 +1462,8 @@ class Runner:
             argv += ["--permission-mode", "bypassPermissions"]
         denied += [name for name in disallow if name not in denied]
         argv += ["--disallowedTools", *denied]
-        budget = self.run_cfg.get("budget_usd_per_step")
+        if budget is None:
+            budget = self.run_cfg.get("budget_usd_per_step")
         if budget:
             argv += ["--max-budget-usd", str(budget)]
         if schema:
@@ -1462,11 +1531,15 @@ class Runner:
                     break
                 if now >= next_beat:
                     beats += 1
-                    # Every beat to run.log, every tenth to stdout. A watcher gets
-                    # a line every ten minutes instead of every one, and the file
-                    # loses nothing.
+                    # Every beat to run.log, every fifth to stdout. Ten minutes was
+                    # too coarse to watch by: a build step is planned at about 15,
+                    # so a tenth-beat console showed one line before the step was
+                    # due to finish and could not distinguish "nearly done" from
+                    # "twice its estimate". Five is granular enough to see a step
+                    # overrunning while it is still worth reacting to, and the file
+                    # keeps its per-minute line either way.
                     self.log(f"{tag} still running, {(now - started) / 60:.0f} min,"
-                             f" log {size / 1024:.0f} KB", echo=(beats % 10 == 0))
+                             f" log {size / 1024:.0f} KB", echo=(beats % 5 == 0))
                     next_beat = now + 60
                 time.sleep(2)
             elapsed = time.time() - started
@@ -1734,6 +1807,48 @@ class Runner:
                      " settings name, not what you were spawned as.\n")
         return "".join(parts)
 
+    def handover_brief(self, step, attempt, leg, legs, remediation, rework,
+                       previous, work):
+        """The brief for a CONTINUATION: the same goal, half-built by somebody else.
+
+        The danger this brief exists to manage is that a fresh worker's instinct
+        is to start over. It has none of the previous worker's context, the code
+        in front of it is half-finished, and re-deriving it from the brief is the
+        path of least resistance - which would spend a second whole cap arriving
+        back where the first one stopped. So the state of the tree is stated as
+        fact, up front, and the instruction to build on it is explicit.
+
+        The previous worker's own closing words are the handover note. They are
+        free - it wrote them before it was cut off - and they are the only
+        first-hand account of where it had got to that exists.
+
+        It is built on the SAME brief the cut-off worker had, `remediation` and
+        `rework` included. Composing it as a fresh attempt-1 brief instead would
+        silently drop both: a continuation of attempt 3 would lose the diagnostic's
+        plan, and a continuation of a rework would lose the review's findings -
+        so the worker would carry on building the very thing that had just been
+        rejected, with nothing in its brief to say so.
+        """
+        return (self.build_brief(step, attempt, remediation, rework)
+                + "\n# CONTINUATION - this step is already part-built\n\n"
+                f"You are worker {leg + 1} of at most {legs + 1} on this step. The"
+                " worker before you was CUT OFF part-way through, having spent its"
+                " whole budget - not because it was wrong, but because it ran out."
+                " Its work is still in the tree in front of you.\n\n"
+                "**Do not start over.** Read what is there first and build on it."
+                " Re-deriving it from the brief would spend your budget arriving"
+                " where the last worker already stood. If you find something it did"
+                " wrong, fix that thing - do not reset, revert or rewrite what is"
+                " sound.\n\n"
+                "You are on the same budget it was, so spend it on the part that is"
+                " NOT done. Commit as soon as the gates would pass, rather than"
+                " polishing: a committed, gate-passing step is the whole objective,"
+                " and there may be no worker after you.\n\n"
+                "## What is already in the tree\n\n" + (work or "(nothing recorded)")
+                + "\n\n## The last worker's own closing words\n\n"
+                + (previous.strip()[:2000] or "(it was cut off before it said anything)")
+                + "\n")
+
     def review_brief(self, step, of_step, sha, of_entry):
         return (
             "You are the REVIEW step in an unattended overnight run. Nobody is awake.\n"
@@ -1907,9 +2022,12 @@ class Runner:
             else int(self.run_cfg.get("attempts", 3))
         timeout = 60 * float(step.get("timeout_min", self.run_cfg.get("worker_timeout_min", 90)))
         tier = self.tier(step, "build")
+        cap = self.budget_for(step)
         started = time.time()
         remediation = ""
         note = ""
+        workers = 0                # every worker spawned here, continuations included
+        handover_words = handover_work = ""
         for attempt in range(1, attempts + 1):
             # Re-read the baseline PER ATTEMPT, not per step. A commit that landed
             # between attempts is then below the baseline and cannot be reset away.
@@ -1918,43 +2036,93 @@ class Runner:
             if attempt == 3 and (step_dir / "remediation.md").exists():
                 remediation = read_text(step_dir / "remediation.md")
                 self.log(f"[{step['id']}] attempt 3 ingests the remediation plan")
-            brief = self.build_brief(step, attempt, remediation, rework)
-            suffix = "rework" if rework else f"attempt-{attempt}"
-            log_path = step_dir / f"{suffix}.log"
-            if self.args.dry_run:
-                # Said as a stub, not as a worker: "worker exit 0 after 0.0 min"
-                # reads like a worker that ran and found nothing to do.
-                self.log(f"[{step['id']}] {suffix}: (dry run) brief composed for"
-                         f" {tier['model']}/{tier['effort']}, {len(brief)} chars ->"
-                         f" {log_path.name}. No worker is spawned; the gates run next.")
-                log_path.write_text(f"(dry run)\n\n=== BRIEF ===\n{brief}\n", encoding="utf-8")
-                code, elapsed, result = 0, 0.0, {}
-            else:
-                self.log(f"[{step['id']}] {suffix}: worker starting ({tier['model']}/"
-                         f"{tier['effort']}, {len(brief)} chars) -> {log_path.name}")
-                code, elapsed, result = self.run_worker(
-                    self.worker_argv("build", tier), brief, log_path, timeout,
-                    f"[{step['id']}] {suffix}:", step["id"], "build")
-            if not self.args.dry_run:
-                self.log(f"[{step['id']}] {suffix}: worker exit {code} after"
-                         f" {elapsed / 60:.1f} min"
-                         + (" | " + self.one_line(result) if result else ""))
-            # Read BEFORE the gates and acted on AFTER them, deliberately. A worker
-            # can commit work that passes and only then run out of budget on the
-            # tidying up; that step is a PASS and the cap it hit is nobody's
-            # business. The trip only decides what happens when the gates fail.
-            over_budget = result.get("subtype") == BUDGET_SUBTYPE
-            with log_path.open("a", encoding="utf-8", errors="replace") as handle:
-                handle.write("\n=== GATES ===\n")
-                ok, failed, output = self.run_gates(self.all_gates(step), handle)
-            if ok:
-                sha = self.head()
-                moved = sha != before
-                note = f"committed at {sha[:8]}" if moved else "gates pass but HEAD did not move"
-                self.log(f"[{step['id']}] PASS ({note})")
-                return {"outcome": "PASS", "attempts": attempt, "sha": sha,
-                        "minutes": round((time.time() - started) / 60, 1),
-                        "note": note, "summary": (result.get("result") or "")[:2000]}
+            # ONE ATTEMPT MAY TAKE SEVERAL WORKERS. The cap is per invocation, so a
+            # worker cut off part-way can be CONTINUED: the next one gets a fresh
+            # cap and the tree exactly as the last left it, and spends the money on
+            # the part that is not done rather than on re-deriving the part that
+            # is. That is the whole difference from a retry, which spends the same
+            # money on repetition. The tree is carried forward between legs and
+            # reset only when the attempt ends, so "a failed attempt leaves no
+            # trace" still holds at the level where it matters.
+            legs = 0 if self.args.dry_run else self.continuations
+            over_budget = False
+            why_stopped = ""
+            for leg in range(legs + 1):
+                if leg:
+                    brief = self.handover_brief(step, attempt, leg, legs,
+                                                remediation, rework,
+                                                handover_words, handover_work)
+                    suffix = ("rework" if rework else f"attempt-{attempt}") \
+                        + f"-continued-{leg}"
+                else:
+                    brief = self.build_brief(step, attempt, remediation, rework)
+                    suffix = "rework" if rework else f"attempt-{attempt}"
+                log_path = step_dir / f"{suffix}.log"
+                state_before = self.tree_state()
+                if self.args.dry_run:
+                    # Said as a stub, not as a worker: "worker exit 0 after 0.0 min"
+                    # reads like a worker that ran and found nothing to do.
+                    self.log(f"[{step['id']}] {suffix}: (dry run) brief composed for"
+                             f" {tier['model']}/{tier['effort']}, {len(brief)} chars ->"
+                             f" {log_path.name}. No worker is spawned; the gates run next.")
+                    log_path.write_text(f"(dry run)\n\n=== BRIEF ===\n{brief}\n",
+                                        encoding="utf-8")
+                    code, elapsed, result = 0, 0.0, {}
+                else:
+                    self.log(f"[{step['id']}] {suffix}: worker starting ({tier['model']}/"
+                             f"{tier['effort']}, {len(brief)} chars) -> {log_path.name}")
+                    code, elapsed, result = self.run_worker(
+                        self.worker_argv("build", tier, budget=cap), brief, log_path,
+                        timeout, f"[{step['id']}] {suffix}:", step["id"], "build")
+                    workers += 1
+                if not self.args.dry_run:
+                    self.log(f"[{step['id']}] {suffix}: worker exit {code} after"
+                             f" {elapsed / 60:.1f} min"
+                             + (" | " + self.one_line(result) if result else ""))
+                # Read BEFORE the gates and acted on AFTER them, deliberately. A
+                # worker can commit work that passes and only then run out of
+                # budget on the tidying up; that step is a PASS and the cap it hit
+                # is nobody's business. The trip only decides what happens when the
+                # gates fail.
+                over_budget = result.get("subtype") == BUDGET_SUBTYPE
+                with log_path.open("a", encoding="utf-8", errors="replace") as handle:
+                    handle.write("\n=== GATES ===\n")
+                    ok, failed, output = self.run_gates(self.all_gates(step), handle)
+                if ok:
+                    sha = self.head()
+                    moved = sha != before
+                    note = (f"committed at {sha[:8]}" if moved
+                            else "gates pass but HEAD did not move")
+                    if leg:
+                        note += f" (over {leg + 1} workers; the budget cut short {leg})"
+                    self.log(f"[{step['id']}] PASS ({note})")
+                    return {"outcome": "PASS", "attempts": attempt, "sha": sha,
+                            "minutes": round((time.time() - started) / 60, 1),
+                            "legs": workers if workers > 1 else None, "note": note,
+                            "summary": (result.get("result") or "")[:2000]}
+                if not over_budget:
+                    break
+                if leg == legs:
+                    why_stopped = (f"and its {legs} continuation(s) were used up"
+                                   if legs else "and continuation is off"
+                                   " (run.continuations is 0)")
+                    break
+                # THE RUNAWAY TEST. A worker that spent an entire cap and left the
+                # tree byte-identical produced nothing to hand on: continuing would
+                # buy a second cap of the same going-nowhere, and handing a fresh
+                # worker a half-built wrong thing to finish is worse than stopping.
+                # Without git this cannot be told, and there is no undo either, so
+                # "cannot tell" is treated as "do not continue".
+                after = self.tree_state()
+                if state_before is None or after is None or after == state_before:
+                    why_stopped = ("and it had changed NOTHING in the tree, so there"
+                                   " was nothing to continue from")
+                    break
+                handover_words = result.get("result") or ""
+                handover_work = self.work_since(attempt_base)
+                self.log(f"[{step['id']}] {suffix}: cut off with work in the tree -"
+                         f" continuing it with a fresh worker ({leg + 2} of"
+                         f" {legs + 1} allowed)")
             note = f"failed the gate: {failed}"
             # WHY the attempt failed, not just that a gate did. A worker the runner
             # had to kill never finished its work, so its gate failure says nothing
@@ -1968,9 +2136,8 @@ class Runner:
                         f" killed; {note}")
             elif over_budget:
                 spent = result.get("total_cost_usd") or 0.0
-                cap = float(self.run_cfg.get("budget_usd_per_step") or 0)
                 note = (f"worker RAN OUT OF BUDGET (${spent:.2f} against a"
-                        f" ${cap:.2f} cap) and was cut off part-way; {note}")
+                        f" ${float(cap or 0):.2f} cap) {why_stopped}; {note}")
             if self.args.dry_run:
                 # No worker ran, so there is nothing to undo - and safe_reset would
                 # quarantine the operator's untracked files to get a clean tree,
@@ -1993,12 +2160,14 @@ class Runner:
                 # fresh cap to be cut off at the same place, and the diagnostic
                 # would be asked to explain a gate failure whose cause is that
                 # the worker never got to finish. See OVER_BUDGET.
-                note += (" - NOT retried: the cap is per invocation, so another"
-                         " attempt would spend it again for the same result."
-                         " Split the step or raise run.budget_usd_per_step.")
+                note += (f" - NOT retried after {workers} worker(s): the cap is per"
+                         " invocation, so another attempt would spend it again for"
+                         " the same result. Split the step, raise its `budget_usd`,"
+                         " or allow more `run.continuations`.")
                 self.log(f"[{step['id']}] {OVER_BUDGET} - {note}")
                 return {"outcome": OVER_BUDGET, "attempts": attempt, "sha": self.head(),
-                        "minutes": round((time.time() - started) / 60, 1), "note": note}
+                        "minutes": round((time.time() - started) / 60, 1),
+                        "legs": workers if workers > 1 else None, "note": note}
             if attempt == 2 and attempts > 2 and not self.args.dry_run:
                 self.run_diagnostic(step, step_dir, attempt_base)
         if self.args.dry_run:
@@ -2589,6 +2758,13 @@ run:
   wall_threshold: 3              # barren workers in a row before that happens
   park_poll_min: 30              # minutes between probes while parked
   stall_min: 10                  # kill a worker silent this long (0 = off)
+  continuations: 0               # extra workers ONE ATTEMPT may use when the cap
+                                 # cuts one off part-way. The next gets a fresh
+                                 # cap and the tree as the last left it, so the
+                                 # money buys progress rather than the repetition
+                                 # a retry buys. A worker that changed NOTHING is
+                                 # never continued - that is a runaway, not a big
+                                 # step. 0 (off) unless the cap is sized per step
   isolation: worktree            # THE DEFAULT. Each build step gets its own git
                                  # worktree on a scratch branch, integrated once
                                  # its gates pass; the operator's tree is never
@@ -2619,6 +2795,11 @@ steps:
     model: sonnet                # optional per-step tier override
     effort: medium
     timeout_min: 60
+    budget_usd: 6                # this step's own cap, overriding
+                                 # run.budget_usd_per_step. Time has always been
+                                 # per-step; one run-level cap has to be sized for
+                                 # the plan's LARGEST step, which leaves every
+                                 # smaller one effectively uncapped
     gates:                       # this step's own; a test NODE ID is a contract
       - {cmd: python -m pytest -q tests/x.py::test_the_claim}
       - {file: docs/09.md}
@@ -2868,6 +3049,10 @@ def main():
     parser.add_argument("--stall-min", type=float, default=None,
                         help="kill a worker whose log has not grown for this many"
                              " minutes (default 10, 0 to disable)")
+    parser.add_argument("--continuations", type=int, default=None,
+                        help="extra workers one attempt may use when the budget cuts"
+                             " one off part-way, carrying its work forward"
+                             " (default 0, off)")
     parser.add_argument("--from", dest="from_step", default="")
     parser.add_argument("--only", default="", help="comma-separated step ids")
     parser.add_argument("--rerun", action="store_true", help="re-run steps already PASSed in state")

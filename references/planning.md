@@ -43,6 +43,10 @@ Read, in this order:
   are the first candidates for this run's steps;
 - the test layout: how tests are named, how one is run by node id, what the
   whole-suite command is. Every gate is one of these.
+- **the ledger of any previous run** - the `done:` blocks in `overnight/steps.yaml`
+  and the estimate-vs-actual table in `overnight/runs/<name>/SUMMARY.md`. This is
+  the only honest calibration that exists: what steps in THIS project, at these
+  tiers, actually took. Use it in section 3 rather than estimating from nothing.
 
 Then say back, in five lines, what you understand the state to be. A wrong
 reading surfaces here for free or at 03:00 for real money.
@@ -75,6 +79,30 @@ the symptom, not the disease.
   to what was learned.
 - The **proving case belongs inside the step**. A step whose exit is "its tests
   pass" has not exited until something real has been pushed through it.
+
+**Calibrate against what the project has actually recorded, not against a feel
+for the work.** If a previous run left a ledger, put the new steps beside the old
+actuals: a step of about this size in this project took about this long. Two
+things to look for, and the second is the one that pays:
+
+- steps whose actual came in near their `expected_min` - that is what a
+  correctly-cut step looks like here, and the new steps should resemble them;
+- steps that ran two to ten times their estimate, or that carry no `expected_min`
+  at all. Measured over a real 36-step run: every build step that carried an
+  estimate finished in 8 to 24 minutes, while every step that carried none ran
+  28, 33, 52, 54, 53, 119 and 151. Writing the estimate did not make them
+  shorter - it is that a step nobody sized is a step nobody scoped. **An unsized
+  step is the reliable predictor of an overrun**, so give every build step an
+  `expected_min`, and treat any step you cannot put a number to as one you have
+  not yet cut.
+
+**Re-cutting an existing plan.** When steps that have already run are being
+replaced - a block that overran being split into smaller ones - give the new
+steps NEW ids. A step's outcome lives in its own block, so re-cutting under a new
+id leaves the stale `done:` behind with the step it belonged to, and the new
+steps start clean. Do not reach for `--reset-state` to achieve this: it forgets
+every outcome in the plan, including the ones worth keeping. Steps that are
+genuinely unchanged keep their ids and their history.
 
 Propose a **tier per step** and say it: mechanical work with one obvious approach
 at Sonnet medium; a build with a narrow approach at Opus medium; review, reflect
@@ -125,10 +153,20 @@ reset that destroys the code.
 
 ## 7. Estimate, and hand over
 
-Give `expected_min` on every build step - it is recorded beside the actual and is
-how the next plan gets calibrated. Set `timeout_min` at roughly **2.5x** the
-estimate, never at the estimate: killing a worker at its expected time destroys
-the work that was about to be committed.
+Give `expected_min` on every build step - it is recorded beside the actual, it is
+how the next plan gets calibrated (section 1), and a step you cannot put a number
+to is a step you have not finished cutting. Set `timeout_min` at roughly **2.5x**
+the estimate, never at the estimate: killing a worker at its expected time
+destroys the work that was about to be committed.
+
+**A budget cap is optional, and it is all-or-nothing which way you use it.**
+Leave it unset, or set `run.budget_usd_per_step` well above a good step and leave
+`continuations` at 0, and a trip means something went wrong. Alternatively give
+each step its own `budget_usd` at about what that step should cost and set
+`run.continuations` to 1 or 2, so a step too big for one worker is handed to the
+next with its work intact rather than failed. Do NOT set a tight cap without
+continuations: that combination stops a step the first time it overruns, which
+costs the night. If the user has not asked for cost control, set neither.
 
 **Say where everything was written, as links the user can click.** Not for
 sign-off - they are not required to approve it - but nobody should have to go

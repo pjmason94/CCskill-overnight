@@ -248,16 +248,47 @@ ones - from the repository root.
   is re-run on the next launch (section 9, resume).
 - **The worker is killed** if it exceeds `timeout_min` (default
   `run.worker_timeout_min`, 90); that counts as a failed attempt.
-- **The worker ran out of budget:** OVER BUDGET, and the step is **not retried**.
-  `run.budget_usd_per_step` is passed to each worker as `--max-budget-usd`, and it
-  is per *invocation* - retrying spends the whole cap again to be cut off in the
-  same place, so a $6 cap could bill $18 and learn nothing. A cap trip is a
-  planning failure, not a finding about the code: either the brief asks for more
+- **The worker ran out of budget:** it is **continued** if `run.continuations`
+  allows, and otherwise the step is OVER BUDGET and is **not retried**. The cap
+  (`budget_usd` on the step, else `run.budget_usd_per_step`) is passed to each
+  worker as `--max-budget-usd`, and it is per *invocation* - so retrying spends
+  the whole cap again to be cut off in the same place, and a $6 cap could bill
+  $18 and learn nothing. A continuation spends it on the part that is not done
+  instead (see below). When there is no continuation left, the trip is a planning
+  failure rather than a finding about the code: either the brief asks for more
   than the cap will pay for or the cap is too low, and only a person can say
   which. The step is blocking (`--mode` prints `BLOCKED`) and resumable, and its
   note names both figures, e.g. `worker RAN OUT OF BUDGET ($6.02 against a $6.00
   cap)`. A worker that commits passing work and only then runs out on the tidying
   up is still a PASS - the gates decide, not the exit code.
+
+### Continuation: one attempt, several workers
+
+`run.continuations` (default **0**, off) is how many *extra* workers one attempt
+may use when the budget cuts one off part-way. The next worker gets a fresh cap
+and **the tree exactly as the last one left it**, plus a handover brief naming
+what is already committed, what is still uncommitted, and the last worker's own
+closing words - and telling it not to start over. That is the whole difference
+from a retry: the same money buys progress rather than repetition.
+
+Turn it on beside a per-step `budget_usd`, not on its own. With a backstop-sized
+run cap (the 45 this README recommends below) a trip is genuinely anomalous and
+stopping is right; with a cap sized to the step, being cut off is a schedule.
+
+Two bounds, and both matter:
+
+- **A worker that changed nothing is never continued.** The runner fingerprints
+  the tree - HEAD plus everything uncommitted - either side of every worker. One
+  that spent an entire cap and left it byte-identical is a runaway, not a big
+  step: there is nothing to hand on, and handing a fresh worker a half-built
+  wrong thing to finish is worse than stopping.
+- **The limit is a limit.** Exhausting it is OVER BUDGET. Without that, this is
+  the same money pump the retry was, wearing a different hat.
+
+The tree is carried forward *between legs* and still reset when the attempt ends,
+so "a failed attempt leaves no trace" holds at the attempt level. A step that took
+more than one worker records `legs:` in the ledger, and each continuation's log is
+kept beside the first as `attempt-N-continued-M.log`.
 
 ### Review steps
 
@@ -501,7 +532,8 @@ where the run directory is and that the tree is off limits.
 | `review_timeout_min` | 30 | the same for a review worker |
 | `reflect_timeout_min` | 30 | the same for a reflect worker |
 | `diagnostic_timeout_min` | 20 | the same for the diagnostic pass |
-| `budget_usd_per_step` | none | passed to every worker as `--max-budget-usd`; a build attempt that trips it is OVER BUDGET and is not retried (see section 14 on what that figure is) |
+| `budget_usd_per_step` | none | passed to every worker as `--max-budget-usd`; a step's own `budget_usd` overrides it. A build attempt that trips it is OVER BUDGET and is not retried (see section 14 on what that figure is) |
+| `continuations` | 0 | extra workers one attempt may use when the budget cuts one off part-way, carrying its work forward |
 | `preamble` | none | a file prepended to every build brief; `{CHUNK}` in it is replaced by the step id |
 | `decisions_file` | `overnight/DECISIONS-PENDING.md` | where workers write questions and findings; read by reflect steps |
 | `out` | `overnight/runs` | the parent of the run directory |
@@ -524,6 +556,7 @@ where the run directory is and that the tree is off limits.
 | `model`, `effort` | build, review, reflect | override the kind's default tier |
 | `expected_min` | any | a plan-time estimate; recorded beside the actual (section 14). Never terminates anything |
 | `timeout_min` | any with a worker | hard kill; belongs at roughly 2.5x `expected_min`, never at the estimate |
+| `budget_usd` | any with a worker | this step's own cap, overriding `run.budget_usd_per_step`. Must be a positive number; a bad value is refused at load, not at 2am |
 | `gates` | build, gate | this step's own gates, run before the universal ones |
 
 ### Gates
@@ -595,6 +628,7 @@ step id.
 | `--wall-threshold <n>` | overrides `run.wall_threshold` |
 | `--park-poll-min <n>` | overrides `run.park_poll_min` |
 | `--stall-min <n>` | overrides `run.stall_min`; 0 disables the stall watchdog |
+| `--continuations <n>` | overrides `run.continuations`; 0 disables continuation |
 | `--list` | print every step, its kind, its recorded outcome, its title; exit |
 | `--print-brief <id>` | print the composed brief a build or reflect worker would receive; exit |
 | `--format` | print the steps file reference form; exit |
@@ -679,6 +713,11 @@ Lines to grep for: `start (`, `PASS`, `FAIL`, `STUCK`, `HALTED`, `OVER BUDGET`,
 `CANNOT RESET`, `REFUSING TO START`, `STOP:`, `summary written`. The heartbeat
 (`still running`) is the line to grep OUT.
 
+The heartbeat goes to `run.log` **every minute** and to the console **every five**.
+The file is the record; the console is for somebody watching a live run, and five
+minutes is the finest granularity worth having against a build step planned at
+about fifteen.
+
 ### The ledger: `done:` in the steps file
 
 There is no `state.json`. Every outcome is written into the step it belongs to,
@@ -696,6 +735,8 @@ in `overnight/steps.yaml`, and committed as `overnight: <step id> <outcome>`:
       at: "2026-09-05 10:22"     # local time, minute resolution
       sha: "f756c08a"            # absent for SKIPPED and for a run without git
       attempts: 1                # build steps
+      legs: 2                    # only when the budget cut a worker short and a
+                                 # continuation carried it on: workers, not attempts
       minutes: 29.6              # wall clock over every attempt
       cost_usd: 2.39             # this step's workers, self-reported. A review
                                  # step's figure includes any rework IT ordered,
@@ -983,12 +1024,23 @@ tokens used. Workers run as `claude -p` with `ANTHROPIC_API_KEY` stripped from
 their environment (section 12), so on a subscription they spend the
 subscription's allowance and the dollar figure is notional - but
 `budget_usd_per_step` is enforced against that notional figure, and will halt a
-worker that exceeds it. Set it well above what a good step costs (45 was right
-for opus/medium) or leave it unset - a step that trips the cap is OVER BUDGET,
-is not retried, and blocks the plan until a person looks at it (section 8), so a
-cap set too tight costs a night rather than saving money. The cap is also only
-checked at **turn boundaries**: a $0.002 cap measured on 2026-09-07 let a $0.069
-turn through, 34x over, so treat it as a backstop and not a precise limit.
+worker that exceeds it. There are two ways to use it, and they want opposite
+settings:
+
+- **As a backstop.** Set it well above what a good step costs (45 was right for
+  opus/medium), leave `continuations` at 0, and a trip means something has gone
+  wrong. The step is OVER BUDGET, is not retried, and blocks the plan until a
+  person looks at it (section 8).
+- **As a schedule.** Put `budget_usd` on each step at roughly what that step
+  should cost, and set `run.continuations` to 1 or 2. Being cut off is then
+  routine: the work is handed to a fresh worker with the tree as it stands
+  (section 8), and only a step that overruns *every* leg, or one that spends a
+  whole cap changing nothing, ends OVER BUDGET.
+
+A tight cap with continuation off is the one combination to avoid - it costs a
+night rather than saving money. The cap is also only checked at **turn
+boundaries**: a $0.002 cap measured on 2026-09-07 let a $0.069 turn through, 34x
+over, so treat it as an approximate limit in either mode.
 
 **Where the money actually goes** is measured in `docs/token-efficiency.md`, over
 every real worker this project has run: cost is API calls multiplied by the

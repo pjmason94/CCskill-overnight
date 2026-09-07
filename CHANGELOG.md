@@ -7,6 +7,37 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Added
 
+- **A cut-off worker can now be CONTINUED rather than repeated, and a cap can be
+  sized to a step.** Two new keys: per-step **`budget_usd`**, which overrides
+  `run.budget_usd_per_step`, and **`run.continuations`** (`--continuations`,
+  default **0**, off).
+
+  Time has always been per-step (`timeout_min`); money was not. One run-level cap
+  has to be sized for the plan's *largest* step, which leaves every smaller step
+  effectively uncapped and means a trip could never say anything useful about the
+  step it happened on. `budget_usd` is the matching knob.
+
+  With a cap that fits the step, being cut off stops being an anomaly and becomes
+  a schedule. So **one attempt may now take several workers**: when the budget
+  cuts a worker off part-way, the next one gets a fresh cap and the tree exactly
+  as the last left it, and a handover brief telling it what is already built and
+  not to start over. That is the whole difference from a retry - the same money
+  buys *progress* instead of *repetition*.
+
+  **A worker that changed nothing is never continued.** The runner fingerprints
+  the tree (HEAD plus everything uncommitted) either side of each worker. One
+  that spent an entire cap and left the tree byte-identical is a runaway, not a
+  big step: there is nothing to hand on, and handing a fresh worker a half-built
+  wrong thing to finish is worse than stopping. That trips `OVER BUDGET`
+  immediately, and so does exhausting the continuation limit - without a bound
+  this would be the same money pump the retry was.
+
+  The undo model is unchanged where it matters: the tree is carried forward
+  *between legs*, and still reset when the attempt ends, so "a failed attempt
+  leaves no trace" still holds at the attempt level. The ledger records `legs:`
+  when a step took more than one worker, and each continuation's log is kept
+  beside the first as `attempt-N-continued-M.log`.
+
 - **A step that runs out of budget now stops instead of buying the same failure
   three times.** `run.budget_usd_per_step` has always been passed to each worker
   as `--max-budget-usd`, but a trip was just another failed attempt: the cap is
@@ -64,6 +95,38 @@ All notable changes to this project are recorded here. Format loosely follows
   loop, which only runs while a worker does.
 
 ### Changed
+
+- **Planning now calibrates against what the project actually recorded.**
+  `references/planning.md` already required one deliverable per step at about
+  fifteen minutes; what it lacked was any instruction to look at a previous run's
+  numbers. It now reads the `done:` blocks and the estimate-vs-actual table in
+  `SUMMARY.md` as part of reading the project, and cuts new steps beside those
+  actuals.
+
+  The finding that drove it, measured over a real 36-step run: every build step
+  carrying an `expected_min` finished in 8 to 24 minutes, and every step carrying
+  none ran 28, 33, 52, 53, 54, 119 and 151. Writing an estimate does not make a
+  step shorter - **a step nobody sized is a step nobody scoped**, so an unsized
+  step is the reliable predictor of an overrun.
+
+- **Re-cutting an existing plan is now documented.** New steps take new ids, so a
+  stale `done:` is left behind with the step it belonged to and the replacements
+  start clean - rather than reaching for `--reset-state`, which forgets every
+  outcome in the plan including the ones worth keeping.
+
+- **A re-plan is now allowed as a resolution to BLOCKED, at the user's
+  instruction only.** BLOCKED still reports first and the skill still must never
+  *offer* to re-plan - a blocked step is a finding, and planning it away unasked
+  hides the thing the user needs to see. But a step blocked because it was cut
+  too big has a legitimate answer that is not a command, and previously the skill
+  stopped dead rather than letting the user take it.
+
+- **The console heartbeat is every 5 minutes, not every 10.** `run.log` still gets
+  a line every minute; only the echo changed. Ten minutes was too coarse to watch
+  a run by - a build step is planned at about fifteen, so the console showed one
+  heartbeat before the step was even due to finish, and could not distinguish
+  "nearly done" from "already at twice its estimate". Display only; no test covers
+  it, because there is no behaviour to assert beyond the cadence itself.
 
 - **Workers are now told to keep tool commands short-running and scoped**, not
   just to keep their results small. The note already covered output size; it said

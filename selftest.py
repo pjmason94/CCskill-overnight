@@ -179,6 +179,36 @@ steps:
       - cmd: python -m pytest -q tests/test_s1.py
 """
 
+# CONTINUATION. The run cap is 6 and the STEP's own is 2, so the same fixture
+# proves both that a per-step cap overrides the run's and that a cut-off worker is
+# handed on rather than repeated. `continuations: 1` - one extra worker, so the
+# bound is testable in two legs rather than four.
+CONTINUE_SPEC = """\
+run:
+  name: continue
+  hours: 1
+  attempts: 3
+  worker_timeout_min: 2
+  budget_usd_per_step: 6
+  continuations: 1
+  preamble: overnight/briefs/_preamble.md
+  gates:
+    - {name: suite, cmd: python -m pytest -q tests/test_base.py}
+    - {clean_tree: true}
+steps:
+  - id: s1
+    kind: build
+    title: a step bigger than one worker's budget
+    brief: overnight/briefs/s1.md
+    budget_usd: 2
+    gates:
+      - cmd: python -m pytest -q tests/test_s1.py
+  - id: review:s1
+    kind: review
+    of: s1
+    on_fail: rework
+"""
+
 FOREIGN_SPEC = """\
 run:
   name: foreign
@@ -1337,8 +1367,14 @@ def main():
               not (broke / "overnight" / "runs" / "budget" / "s1" / "diagnostic.log").exists())
         check("the note names the spend against the cap",
               "$6.02 against a $6.00 cap" in str(entry.get("note")), str(entry.get("note")))
+        # All THREE levers, because which one applies is the user's call and a note
+        # naming only one of them is an instruction rather than a choice.
         check("...and says what a person is being asked to change",
-              "budget_usd_per_step" in str(entry.get("note")), str(entry.get("note")))
+              all(s in str(entry.get("note")) for s in
+                  ("Split the step", "budget_usd", "run.continuations")),
+              str(entry.get("note")))
+        check("...and says continuation was off, not that it was tried and failed",
+              "continuation is off" in str(entry.get("note")), str(entry.get("note")))
         # It reported a cost and turns, so it is a worker that answered. Reading it
         # as barren would park the run on a spending limit that is the run's own.
         check("a budget trip is never counted as a barren worker",
@@ -1363,6 +1399,107 @@ def main():
               entry.get("outcome") == "PASS", str(entry))
         check("...on the first attempt, with nothing redone",
               entry.get("attempts") == 1, str(entry))
+
+        print("22. a cut-off worker is CONTINUED, not repeated")
+        # The cap is per invocation, so the money a retry spends buys the same
+        # work again. A continuation spends it on the part that is not done: the
+        # next worker gets a fresh cap and the tree exactly as the last left it.
+        # The guard that matters is the runaway one - a worker that spent the cap
+        # and changed nothing has produced nothing to hand on, and continuing it
+        # would buy a second cap of going nowhere.
+        def continue_repo(name, behaviours, also=None):
+            where = make_repo(root / name)
+            (where / "overnight" / "steps.yaml").write_text(CONTINUE_SPEC, encoding="utf-8")
+            sh(where, "git", "add", "-A")
+            sh(where, "git", "commit", "-q", "-m", "continue spec")
+            scen = root / f"scenario-{name}.json"
+            plan = dict(also or {})
+            plan["s1"] = behaviours
+            scen.write_text(json.dumps(plan), encoding="utf-8")
+            done = run_runner(where, scen)
+            out = where / "overnight" / "runs" / "continue"
+            return where, done, (out / "run.log").read_text(encoding="utf-8"), out
+
+        went, done, wlog, out = continue_repo(
+            "continued", ["over-budget", "finish-the-handover"])
+        entry = ledger(went).get("s1", {})
+        # `finish-the-handover` REFUSES unless the half-built file is still there
+        # and the brief says it is a continuation, so a PASS here is the proof
+        # that the tree was carried forward and the handover was written.
+        check("a continuation finishes the work the cap cut short",
+              entry.get("outcome") == "PASS", str(entry))
+        check("...within ONE attempt, because a continuation is not a retry",
+              entry.get("attempts") == 1, str(entry))
+        check("...and the ledger says two workers did it",
+              entry.get("legs") == 2, str(entry))
+        check("...with the second one's log kept beside the first",
+              (out / "s1" / "attempt-1-continued-1.log").exists())
+        # Asserted on the run log, not the ledger note: under isolation the note is
+        # REPLACED at integration with where the commit landed on the branch, which
+        # is the more useful thing for it to say. `legs:` carries the count.
+        check("the log says the budget cut the step short",
+              "over 2 workers; the budget cut short 1" in wlog, wlog[-800:])
+        # THE HANDOVER ITSELF, in the brief the second worker was actually given.
+        # Read defensively: if the continuation never ran, that is a FAILED CHECK
+        # above, and the suite must go on to report it rather than dying here.
+        cont_log = out / "s1" / "attempt-1-continued-1.log"
+        handover = cont_log.read_text(encoding="utf-8") if cont_log.exists() else ""
+        check("the continuation is told not to start over",
+              "Do not start over" in handover, handover[:400])
+        check("...and is given what the last worker left in the tree",
+              "Left uncommitted in the tree:" in handover, handover[:400])
+
+        # THE PER-STEP CAP: the run says 6, the step says 2, and 2 must be what the
+        # worker was SPAWNED with, not merely what the note later claims. Asserted
+        # against the argv line the runner writes at the head of every worker log.
+        spawned = (out / "s1" / "attempt-1.log").read_text(encoding="utf-8")[:2000]
+        check("a step's own budget_usd is what reaches --max-budget-usd",
+              "--max-budget-usd 2" in spawned, spawned[:300])
+        check("...and the run-level cap it overrides is not passed as well",
+              "--max-budget-usd 6" not in spawned, spawned[:300])
+
+        # THE RUNAWAY: cap spent, tree byte-identical. Nothing to hand on.
+        idle, done, wlog, out = continue_repo(
+            "runaway", ["over-budget-idle", "finish-the-handover"])
+        entry = ledger(idle).get("s1", {})
+        check("a worker that spent the cap and changed NOTHING is not continued",
+              entry.get("outcome") == "OVER BUDGET", str(entry))
+        check("...so no second worker is spawned for it",
+              not (out / "s1" / "attempt-1-continued-1.log").exists())
+        check("...and the note says why it was not continued",
+              "changed NOTHING" in str(entry.get("note")), str(entry.get("note")))
+
+        # THE BOUND: continuations is 1, so two workers and no more, however many
+        # times the cap is tripped. Otherwise this is the $18 money pump again.
+        pump, done, wlog, out = continue_repo(
+            "bounded", ["over-budget", "over-budget", "over-budget"])
+        entry = ledger(pump).get("s1", {})
+        check("continuation is bounded: one extra worker, not an open cheque",
+              entry.get("outcome") == "OVER BUDGET" and entry.get("legs") == 2,
+              str(entry))
+        check("...and it stops at the limit rather than retrying the attempt",
+              not (out / "s1" / "attempt-2.log").exists())
+        check("...saying the continuations were used up",
+              "continuation(s) were used up" in str(entry.get("note")),
+              str(entry.get("note")))
+
+        # A CONTINUATION OF A REWORK must still carry the review's findings. The
+        # handover brief is built on the brief the cut-off worker actually had -
+        # composing a fresh attempt-1 brief instead would silently drop `rework`
+        # (and, on attempt 3, the diagnostic's remediation), so the continuation
+        # would carry on building the very thing the reviewer had just rejected
+        # with nothing in front of it saying so.
+        red, done, wlog, out = continue_repo(
+            "rework-continued", ["pass"],
+            {"review:s1": ["review:rework"],
+             "s1#rework": ["over-budget", "finish-the-handover"]})
+        check("a rework can be continued too",
+              ledger(red).get("review:s1", {}).get("outcome") == "REVIEW REWORK PASS",
+              str(ledger(red).get("review:s1")))
+        cont = out / "s1" / "rework-continued-1.log"
+        check("...and its continuation still carries the review's findings",
+              cont.exists() and "# REWORK:" in cont.read_text(encoding="utf-8"),
+              "no continuation log" if not cont.exists() else "no REWORK heading")
 
         if failures:
             print("\n--- run.log tail ---")

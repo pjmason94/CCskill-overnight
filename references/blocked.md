@@ -22,12 +22,17 @@ the tree would have destroyed somebody else's work. The runner refused, which is
 correct, but it means the step's own state was never cleaned up and the branch
 now holds commits from two sources.
 
-**OVER BUDGET** - the worker was cut off part-way by `run.budget_usd_per_step`,
-having spent the whole cap. It is deliberately not retried: the cap is per worker
-invocation, so a second attempt buys the same cut-off at the same price. Nothing
-here says the worker was wrong - it says the brief asks for more than the cap
-will pay for, or the cap is set below what the work costs, and only the user can
-say which.
+**OVER BUDGET** - the worker was cut off part-way by its budget cap (the step's
+own `budget_usd`, else `run.budget_usd_per_step`), having spent the whole thing,
+and either continuation is off, or its continuations were used up, or it had
+changed NOTHING in the tree and there was nothing to hand on. It is deliberately
+not retried: the cap is per worker invocation, so a second attempt buys the same
+cut-off at the same price. Nothing here says the worker was wrong - it says the
+brief asks for more than the cap will pay for, or the cap is set below what the
+work costs, and only the user can say which. **The note says which of the three
+it was, and that changes the advice:** used-up continuations means the step is
+too big for its cap, while "changed NOTHING" means a worker went nowhere for a
+whole cap, which is a runaway and a reason to look at the brief itself.
 
 All three mean the ground is wrong, not that the step was unlucky. Finding that
 out at 09:00 costs one step; not finding out costs the four steps built on top
@@ -48,12 +53,16 @@ and find any of it.
    `overnight/runs/<run>/<step>/discarded-commits.md`: its sha, who made it and
    its subject line. Say plainly that the tree was NOT reset and that the branch
    holds both the run's commits and theirs.
-4. **For OVER BUDGET - the two figures in the `note:`**: what the worker spent
-   and what the cap was, and what the step's other attempts (if any) cost. Then
-   say which of the two choices the user is being asked to make - split the step
-   into smaller ones, or raise `run.budget_usd_per_step` - and, if the run's
-   other steps have costs recorded, what a step of this size has actually been
-   costing. Do not recommend raising the cap without that number.
+4. **For OVER BUDGET - the two figures in the `note:`**, what the worker spent
+   and what the cap was, plus `legs:` if the step took more than one worker.
+   Then say which of the three choices the user is being asked to make - split
+   the step into smaller ones, raise its `budget_usd`, or allow more
+   `run.continuations` - and, if the run's other steps have costs recorded, what
+   a step of this size has actually been costing. Do not recommend raising the
+   cap without that number. If the note says the worker **changed NOTHING**, say
+   so plainly and do not recommend more budget at all: a worker that spent a
+   whole cap without touching the tree will do it again, and the brief is what
+   needs looking at.
 5. **Anything that step wrote to `overnight/DECISIONS-PENDING.md`.** Workers are
    told to write findings there as they learn them, so a step that got into
    trouble has usually said why.
@@ -70,6 +79,13 @@ Give these as commands, not as offers to act. The user resolves this, not you.
 
     # accept it and carry on with the rest, deliberately
     python <skill dir>/overnight.py --spec <abs>/overnight/steps.yaml --from <next id>
+
+There is a fourth option that is not a command: **re-planning the step**, which
+is right when the step is blocked because it was cut too big rather than because
+the ground is wrong. Say it is available and say nothing more - do not recommend
+it and do not offer to do it. If the user asks for it, `references/planning.md`
+covers re-cutting an existing plan, and the new steps take new ids so the stale
+outcome is left behind with the step it belonged to.
 
     # forget every recorded outcome - this launches nothing, it only forgets
     python <skill dir>/overnight.py --spec <abs>/overnight/steps.yaml --reset-state

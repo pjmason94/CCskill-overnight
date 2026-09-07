@@ -49,7 +49,14 @@ Two modes are asked for directly rather than inferred, and skip `--mode`:
 
 If the user names a mode explicitly (`/overnight plan` when a plan already
 exists), still run `--mode` first and say what it found before doing as they
-asked - except for BLOCKED, which stops regardless.
+asked - except for BLOCKED, which reports first regardless.
+
+**A re-plan IS a legitimate resolution to BLOCKED - but only the user may reach
+for it.** Never offer it: a blocked step is a finding, and a skill that proposes
+planning it away is papering over the thing the user needs to see. Report it as
+`references/blocked.md` says. If the user then instructs a re-plan, having been
+told what is blocked and why, that is their call and it proceeds to
+`references/planning.md`.
 
 **Load exactly one reference file, then follow it.** They are procedures, not
 background reading, and each is written to be executed top to bottom.
