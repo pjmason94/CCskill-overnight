@@ -54,7 +54,9 @@ way to run a section alone - `main()` takes no arguments and its 23 sections are
 `print()` statements inside one linear function ([`selftest.py`](../selftest.py)).
 So every gate is the whole suite, and every attempt pays it. At 12 min 42 s that
 is roughly an hour of gates across a five-step night, which an eight-hour run can
-afford.
+afford. Piece 0 removes even that, and is what would make a future run of this
+repo cheap to gate - but it does not change the two arguments below, which are
+the ones that decided it.
 
 The deciding arguments were:
 
@@ -80,16 +82,63 @@ nothing else is launching, and against work that is gateable.
 
 | # | piece | why here | proves it | est | tier |
 |---|---|---|---|---|---|
+| 0 | run the self-test by section | every piece after it is iterated on 13 minutes at a time otherwise | its own check-count invariant | 90 min | OM |
 | 1 | the published self-test runtime is wrong | free, and a wrong number outranks a bug | reading the clock | 15 min | SM |
 | 2 | a blocking step must declare stranded work | closes a defect that just cost a real decision | new self-test section | 45 min | OM |
+| 2a | the retry ladder | roadmap 13; near zero cost, no extra worker | new self-test section | 45 min | OM |
 | 3 | `--until` | roadmap 11; the largest piece | new self-test section - the clock has **none** today | 75 min | OM |
 | 4 | `expected_min` refuses a step it cannot finish | roadmap 3; needs 3 | new self-test section | 45 min | OM |
 | 5 | the plan seed | roadmap 7; docs only, so it lands last | nothing - and the commit says so | 45 min | OH |
 | 6 | release notes and the tag | locks the version | `SELFTEST PASS` | 45 min | OH |
 
-Pieces 1, 2 and 3 are independent of each other. 4 depends on 3. 5 and 6 are
+Pieces 1, 2, 2a and 3 are independent of each other. 4 depends on 3. 5 and 6 are
 last because they touch `SKILL.md` and `references/`, which are the files a new
 session reads.
+
+**The working rule these serve** (Paul, 2026-09-07): *the self-test sections run
+during a piece of work are the ones relevant to it; the FULL suite runs before a
+commit and push.* At 12 min 42 s a full suite per iteration is not a test loop,
+it is a coffee break, and the honest consequence of paying it every time is that
+it gets skipped. Piece 0 exists to make the first half of that rule possible.
+
+---
+
+## 0. Run the self-test by section
+
+**Prerequisite for the working rule above, and cheaper than it looks.**
+
+Today `main()` takes no arguments and its 23 sections are `print()` statements
+inside one linear function, so the only thing that can be run is all of it.
+
+**But the sections are far more separable than that suggests.** Mapping every
+`make_repo` call against every section boundary:
+
+| sections | state |
+|---|---|
+| 1, 2, 2b, 3 | share one repository built at [`selftest.py:358`](../selftest.py#L358) and run in sequence - 1 dirties the tree, 2 runs the full scenario, 2b reads the ledger it wrote, 3 resumes it. **One indivisible block** |
+| 4, 5 | build their own (`make_plain_dir`, `make_repo`) |
+| 6, 7 | read a repository an earlier section built - needs checking before either can be selected |
+| **8 through 22** | **each builds its own repository at its own start. Fifteen of the twenty-three are already independently runnable** |
+
+And the sections this plan adds - pieces 2, 2a, 3 and 4 - are new ones, which are
+self-contained by construction. So `--only 23` works for exactly the case the
+work needs, from the first day.
+
+**Shape.** `--only 13,17` and `--from 17`; a bare invocation still runs
+everything and still prints `SELFTEST PASS`. The 1-2-2b-3 block is selected as a
+block, and asking for a section that cannot stand alone says so rather than
+running a subtly different test.
+
+**The one real hazard, and its guard.** The change is a mechanical
+re-indentation of 1,150 lines, and its failure mode is silent: a section
+accidentally dropped from the run still prints `SELFTEST PASS`, and the suite
+gets quietly weaker. So the same piece adds a **total check-count invariant** -
+the full suite counts its own checks and fails if the number is not the expected
+one. It is 235 today. That turns the silent failure into a loud one, and is worth
+having on its own terms.
+
+Do this first. Everything after it is otherwise iterated on in 13-minute
+increments.
 
 ---
 
@@ -165,6 +214,42 @@ so name them in the ledger note and in `SUMMARY.md`, with the sha and the count.
 **Proof.** A new self-test section: a step blocked with commits left on its
 scratch branch names them; a step blocked with a clean branch says nothing extra.
 Show it failing against the current runner first.
+
+---
+
+## 2a. The retry ladder - roadmap 13
+
+Added to the roadmap after this plan was first written; folded in because it is
+cheap, it needs no extra worker, and the evidence for it is already measured.
+
+Attempt 2 is handed the same brief as attempt 1, byte for byte, and told nothing
+about why attempt 1 failed - the roadmap has the log lines showing identical
+character counts across attempts. The diagnostic worker runs only after the
+**second** failure, so the first retry is a pure re-roll.
+
+**The runner already holds every fact needed.** It knows which gate failed, it
+has the gate's output, and it has quarantined whatever untracked files the
+attempt left behind. None of that needs a model. The ladder:
+
+| attempt | given |
+|---|---|
+| 1 | the brief |
+| 2 | the brief + the failed gate's **name** and **output**, truncated, stated as fact |
+| 3 | the brief + `remediation.md` from the diagnostic worker, as now |
+
+**Decision needed.** Nothing structural, but one judgement worth stating rather
+than discovering: attempt 2's addition is deliberately **not** the predecessor's
+code, which would anchor the retry on a design that has already failed once. The
+considered read of what went wrong stays at attempt 3, where a worker is paid for
+it.
+
+**Where it lands.** `build_brief(step, attempt, remediation, rework)` already
+takes the attempt number, so the hook exists; the failed gate's name and output
+have to be carried from the gate runner into the next attempt's brief.
+
+**Proof.** A new self-test section: attempt 2's brief contains the failing gate's
+name and output; attempt 3's contains the remediation, as now. Both are already
+assertable - `run_worker` writes the full brief into every worker log.
 
 ---
 

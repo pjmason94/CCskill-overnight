@@ -111,6 +111,15 @@ has the numbers and the ranking.
   say so in the commit message rather than leaving it silent.
 - Every change to the runner is covered by the self-test, or says why not. A
   guard for a defect must be shown to FAIL against the code before the fix.
+- **While working, run only the self-test sections relevant to the work. The
+  FULL suite runs before a commit and push, every time.** The full suite is 12
+  min 42 s (measured 2026-09-07, 235 checks), which is not a test loop, and the
+  honest consequence of paying it on every iteration is that it gets skipped.
+  Running it by section needs `selftest.py` to accept one - piece 0 of
+  `docs/plan-v1.0.2.md`; until that lands, a scratch script importing
+  `selftest as S` and reusing `make_repo`/`run_runner`/`ledger` is the way, and
+  its assertions must be kept in step with the suite or it reports stale
+  failures.
 - Changes that alter a running contract (step ids, gate forms, the state file,
   the `overnight/` layout) are noted in `README.md` as well as the code.
 - **Every version gets release notes at `docs/releases/v<x.y.z>.md`, written
