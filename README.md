@@ -122,12 +122,19 @@ skill that is actually loaded. If you must, re-run `install.py` after every
 change.
 
 **3. Run the self-test.** It drives every path of the runner against a fake
-worker in a throwaway repository, in under a minute, for no tokens.
+worker in a throwaway repository, for no tokens. Put the kettle on: it is
+**minutes, not seconds** - measured at 12 min 42 s and 18.7 min on 2026-09-07,
+over 235 and 249 checks. Every run ends with a table of where its own time went.
 
     python selftest.py
 
 It must print `SELFTEST PASS`. If it does not, nothing else in this manual is
 worth trying until it does.
+
+While working on the runner itself you can run part of it - `--list` names the
+sections, `--only 13,17` runs those and whatever they need, `--from 17` runs the
+rest of the suite. A partial run prints `SELFTEST PARTIAL OK`, never
+`SELFTEST PASS`, because only the whole suite may precede a launch.
 
 **4. Start a new Claude Code session** so the skill list is re-read. `/overnight`
 is then available in every project (user scope) or in that project (project
@@ -467,10 +474,28 @@ directories that have gone, and removes directories under its worktree root that
 git knows nothing about - naming each one in `run.log` as an orphan. A worktree
 git *does* still have registered is left for git to remove, never torn off the
 filesystem: doing that leaves a dangling registration, and the next step on that
-branch cannot be created at all. Anything the crashed run had committed to a
-step's scratch branch is tagged `rescue/<step>/scratch-<n>` and listed in that
-step's `discarded-commits.md` before the branch is reset, so re-running a step
-never makes its predecessor's work unreachable.
+branch cannot be created at all.
+
+**And what the crashed run had already built is retested, not thrown away.** A
+crash can land after a worker has committed and passed its gates but before the
+run integrated it, leaving a finished step on its scratch branch and nowhere
+else. So before a build step runs, if its scratch branch holds commits that are
+not on your branch, the runner replays them onto your branch's current tip and
+puts them through that step's gates:
+
+- **they pass** - the work is merged exactly as a successful re-run's would be,
+  the step records `PASS` with `attempts: 0` and a note saying where the work came
+  from, and **no worker is spawned**. The gate output is kept as `stranded.log` in
+  the step's directory;
+- **they fail** - they are tagged `rescue/<step>/scratch-<n>`, listed in that
+  step's `discarded-commits.md`, and the step runs normally, exactly as before;
+- **they will not replay** - that is `NEEDS MERGE`: the work exists, on a named
+  branch, and only a person can say how it should land.
+
+The gate is the arbiter of whether work is good everywhere else in this runner,
+so it is the arbiter here too. The replay is not optional and is not cosmetic:
+the stranded commit was built against an older base, and gating it where it was
+built would prove only that it used to work.
 
 A second *runner* is refused either way - the lock (section 16) holds the
 repository. What it does not lock is you. What that means in practice:
@@ -1202,7 +1227,14 @@ Both streams now degrade unprintable characters to `?` instead; `run.log` is UTF
 and keeps them in full. If you are on a build from before this fix, look for work
 stranded on a scratch branch - the crash could land after a worker committed but
 before the outcome was recorded, so the plan will not mention it. `git branch
---list "overnight/*"` then `git log <branch>` finds it.
+--list "overnight/*"` then `git log <branch>` finds it. Since 1.0.2 the next run
+finds it for you: it replays that work, gates it, and merges it if it passes.
+
+**A step says `STUCK`, `attempts: 0`, `could not create the worktree`** - the
+step was never attempted; something was wrong with the worktree, not the code.
+Look above that line in `run.log` for what git said. Before 1.0.2 this note could
+also hide a *finished* step whose work was stranded on the scratch branch by a
+crash - `git log overnight/<run>/<step>` is worth a look on an older build.
 
 **The self-test fails** - `OVERNIGHT_KEEP=1 python selftest.py` keeps the scratch
 repository and prints its path, and the run.log tail is printed on failure.
@@ -1212,7 +1244,7 @@ repository and prints its path, and the run.log tail is printed on failure.
 | file | what |
 |---|---|
 | `overnight.py` | the runner, one file; `python overnight.py --help` |
-| `selftest.py` | every path, against the fake worker, in under a minute |
+| `selftest.py` | every path, against the fake worker; ~15-20 min. `--list`, `--only`, `--from` run part of it |
 | `fake_worker.py` | a scripted stand-in for `claude -p`; the behaviours are listed at its top |
 | `install.py` | link this checkout in as the skill; `--check`, `--force`, `--copy`, `--uninstall` |
 | `SKILL.md` | what Claude Code reads for `/overnight`: a short router over the four modes |

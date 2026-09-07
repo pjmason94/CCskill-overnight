@@ -45,6 +45,11 @@ The runner detects this itself and degrades. It does not need a flag.
 not launch. A runner path that has not been exercised is a path that will be
 exercised for the first time at 03:00, unattended.
 
+It takes **fifteen to twenty minutes** - say so before starting it, so the wait
+is not mistaken for a hang. `--only` and `--from` run part of the suite while working on
+the runner, but a partial run prints `SELFTEST PARTIAL OK`, never
+`SELFTEST PASS`, and nothing partial may precede a launch.
+
 ## 4. Dry-run the plan
 
     python -u <skill dir>/overnight.py --spec <abs path>/overnight/steps.yaml --dry-run --only <first step>

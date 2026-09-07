@@ -1007,6 +1007,116 @@ class Runner:
                          "\n\nRecover one with `git cherry-pick <sha>`;"
                          " drop the tags with `git tag -d <tag>` when done.\n\n")
 
+    def retest_stranded(self, step, step_dir, base):
+        """Work a crashed run left on the scratch branch: replay it, gate it, and
+        keep it if it passes.
+
+        THE FIELD CASE, 2026-09-07. A worker finished at 02:32:39 - exit 0, gates
+        passed, tree clean, work committed - and the run died before integrating
+        it. The relaunch could not create the worktree and recorded `STUCK,
+        attempts: 0, could not create the worktree for this step`, which reads as
+        *nothing happened*. Eleven minutes and five dollars of finished work sat
+        on the scratch branch, and the natural next move - re-run the step -
+        rebuilds every bit of it.
+
+        Reporting that to the operator was the weaker answer. **The gate is
+        already the arbiter of whether work is good**, everywhere else in this
+        runner: work that passes merges exactly as a successful re-run's work
+        would, and work that fails is discarded exactly as a failed attempt's is.
+        Neither needs a person, and neither needs a new outcome.
+
+        The replay is not optional. The stranded commit was built against an
+        OLDER base; gating it where it was built would prove only that it used to
+        work, which is not the question. It is replayed onto the current base
+        first, and that is what makes the test honest.
+
+        This must run BEFORE `worktree add -B`, which force-moves the branch to
+        base and puts these commits out of reach.
+
+        Returns a result to record, or None to run the step normally.
+        """
+        if not self.has_git or self.args.dry_run:
+            return None
+        branch = self.scratch_branch(step["id"])
+        if self.git("rev-parse", "--verify", "--quiet", branch, tree=self.repo)[0] != 0:
+            return None
+        stranded = self.commits_since(base, tip=branch, tree=self.repo)
+        if not stranded:
+            return None
+        self.log(f"[{step['id']}] an earlier run left {len(stranded)} commit(s) on"
+                 f" `{branch}`. Replaying and gating them BEFORE spending a worker.")
+        for sha, _email, subject in stranded:
+            self.log(f"    {sha[:8]} {subject[:80]}")
+
+        path = self.worktree_root() / f"{self.ref_safe(step['id'])}-stranded"
+        if path.exists():
+            self.remove_worktree(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        args = ["worktree", "add", str(path), branch]
+        code, output = self.git(*args, tree=self.repo)
+        if code != 0 and "already used by worktree" in output:
+            self.git("worktree", "prune", tree=self.repo)
+            code, output = self.git(*args, tree=self.repo)
+        if code != 0:
+            # Fall through rather than fail: the normal path tags this work before
+            # it resets the branch, so nothing is lost by not having tested it.
+            self.log(f"    could not check the stranded work out: {output[:200]}")
+            return None
+        try:
+            self.link_into_worktree(path)
+            code, fork = self.git("merge-base", branch, base, tree=self.repo)
+            if code != 0:
+                self.log(f"    no merge base with the branch: {fork[:200]}")
+                return None
+            # Only when the branch has actually moved under it. `git rebase` over a
+            # no-op is free to rewrite the commits it replays, and the sha this
+            # work is tagged under if it fails the gate has to be the one the
+            # morning was told about.
+            code = 0
+            if fork != base:
+                code, output = self.git("rebase", "--onto", base, fork, tree=path)
+            if code != 0:
+                self.git("rebase", "--abort", tree=path)
+                note = (f"an earlier run left {len(stranded)} commit(s) on `{branch}`"
+                        " and they do not replay onto the branch, so they could not"
+                        " be tested. Merge them by hand (`git rebase`/`git"
+                        " cherry-pick`), or drop the branch and re-run this step.")
+                self.log(f"[{step['id']}] NEEDS MERGE - {note}")
+                return {"outcome": "NEEDS MERGE", "attempts": 0, "note": note}
+            step_dir.mkdir(parents=True, exist_ok=True)
+            with (step_dir / "stranded.log").open("w", encoding="utf-8") as handle:
+                handle.write(f"Work an earlier run left on {branch}, replayed onto"
+                             f" {base[:8]} and put through this step's gates.\n")
+                for sha, email, subject in stranded:
+                    handle.write(f"  {sha} <{email}> {subject}\n")
+                handle.write("\n=== GATES ===\n")
+                outer, self.tree = self.tree, path
+                try:
+                    ok, label, _out = self.run_gates(self.all_gates(step), handle)
+                finally:
+                    self.tree = outer
+        finally:
+            if path.exists():
+                self.remove_worktree(path)
+        if not ok:
+            # Exactly what a failed attempt gets: tagged and listed by
+            # rescue_scratch_branch on the way into the normal run below.
+            self.log(f"[{step['id']}] the stranded work FAILS this step's gates"
+                     f" ({label}). Discarding it and running the step for real.")
+            return None
+        status, sha = self.integrate(step["id"], base, branch)
+        if status == "conflict":
+            note = (f"the work an earlier run left on `{branch}` passed this step's"
+                    " gates but would not land on the branch. Merge it by hand.")
+            self.log(f"[{step['id']}] NEEDS MERGE - {note}")
+            return {"outcome": "NEEDS MERGE", "attempts": 0, "note": note}
+        note = (f"an earlier run built this step and died before integrating it."
+                f" Its work replayed onto the branch, PASSED this step's gates"
+                f" unchanged, and was {status} at {sha[:8]}."
+                " NO WORKER WAS SPENT on it in this run.")
+        self.log(f"[{step['id']}] PASS from an earlier run's work - {note}")
+        return {"outcome": "PASS", "attempts": 0, "sha": sha, "note": note}
+
     def add_worktree(self, step_id, base, detach=False):
         """A private tree on a scratch branch, based at `base`."""
         path = self.worktree_root() / (self.ref_safe(step_id) if not detach else "_probe")
@@ -1977,6 +2087,14 @@ class Runner:
         """
         base = base_sha or self.head_of(self.repo)
         branch = self.scratch_branch(step["id"])
+        if not rework:
+            # A crashed run's work is on this branch and nowhere else. Test it
+            # before add_worktree force-moves the branch off it. A rework is
+            # exempt: the step has already passed once, and what is on the branch
+            # is the very thing the reviewer rejected.
+            stranded = self.retest_stranded(step, step_dir, base)
+            if stranded is not None:
+                return stranded
         path = self.add_worktree(step["id"], base)
         if path is None:
             note = "could not create the worktree for this step"

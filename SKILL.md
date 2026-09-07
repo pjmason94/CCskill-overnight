@@ -107,7 +107,7 @@ source of truth. `--check` reports, `--force` replaces, `--uninstall` removes.
 | file | what |
 |---|---|
 | `overnight.py` | the runner. Report and exit, launching nothing: `--list`, `--print-brief ID`, `--format`, `--progress`, `--mode`, `--reset-state`. `--dry-run` spawns no worker and writes no outcome, but it does execute each gate command. Launch for real: bare, or with `--from ID`, `--only A,B`, `--rerun` |
-| `selftest.py` | every path, against `fake_worker.py`, in under a minute for no tokens |
+| `selftest.py` | every path, against `fake_worker.py`, for no tokens. ~15-20 min, so allow for it. `--list`, `--only 13,17`, `--from 17` run part of it - a partial run says `SELFTEST PARTIAL OK` and never gates a launch |
 | `install.py` | link this checkout in as the skill |
 | `references/blocked.md` | a STUCK or HALTED step: the report, and the hand back |
 | `references/planning.md` | stage 1: read, interview, write the spec and briefs |

@@ -7,6 +7,26 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Added
 
+- **The self-test can now run part of itself.** `python selftest.py --list` names
+  the twenty sections, what each needs before it, and how many checks each makes.
+  `--only 13,17` runs those plus anything they depend on; `--from 17` runs the
+  rest of the suite. A partial run prints `SELFTEST PARTIAL OK` and **never**
+  `SELFTEST PASS`, so it cannot be mistaken for the gate a launch requires.
+
+  The suite is thirteen minutes, which is not a test loop, and the honest
+  consequence of paying it on every iteration is that it gets skipped. Fifteen of
+  the twenty sections already built their own repository and stood alone; the four
+  that read a fixture an earlier section left in a particular state now declare
+  it, and asking for one of those runs its prerequisites too rather than quietly
+  running a subtly different test. A run also ends with a table of where its time
+  went, section by section, which is what makes `--only` worth aiming.
+
+- **Every self-test section declares how many checks it makes, and the suite fails
+  if it makes a different number.** The hazard in selecting sections is silent: a
+  section dropped from the table, or a check lost inside one, still ends in
+  `SELFTEST PASS` while the suite gets quietly weaker. The declared counts turn
+  that into a loud failure naming the section and the number it actually made.
+
 - **A cut-off worker can now be CONTINUED rather than repeated, and a cap can be
   sized to a step.** Two new keys: per-step **`budget_usd`**, which overrides
   `run.budget_usd_per_step`, and **`run.continuations`** (`--continuations`,
@@ -96,6 +116,33 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Changed
 
+- **Work a crashed run left on a scratch branch is now RETESTED, not thrown
+  away.** A crash can land after a worker has committed and passed its gates but
+  before the run integrated it, leaving a finished step on its scratch branch and
+  nowhere else. The runner already tagged those commits before re-running the
+  step, which kept them recoverable - but the morning was told nothing, and the
+  natural next move rebuilt work that already existed.
+
+  Before a build step runs, if its scratch branch holds commits that are not on
+  the operator's branch, the runner now replays them onto the branch's current tip
+  and puts them through that step's own gates. They pass, and the work is merged
+  exactly as a successful re-run's would be: the step records `PASS` with
+  `attempts: 0`, a note saying where the work came from, the gate output kept as
+  `stranded.log` - and **no worker is spawned**. They fail, and they are tagged
+  and discarded exactly as before and the step runs normally. They will not
+  replay, and that is `NEEDS MERGE`, which already meant precisely this.
+
+  Reporting it and leaving the operator to decide was the weaker answer. The gate
+  is the arbiter of whether work is good everywhere else in this runner, so it is
+  the arbiter here. The replay is what makes the test honest - the stranded commit
+  was built against an older base, and gating it where it was built would prove
+  only that it used to work.
+
+  The case this comes from: a worker finished at 02:32:39, exit 0, 11.3 minutes,
+  $5.12, gates passed. The relaunch recorded `STUCK, attempts: 0, could not create
+  the worktree for this step`, which reads as *nothing happened*. Under this
+  change that step costs nothing at all to recover.
+
 - **Planning now calibrates against what the project actually recorded.**
   `references/planning.md` already required one deliverable per step at about
   fifteen minutes; what it lacked was any instruction to look at a previous run's
@@ -148,6 +195,21 @@ All notable changes to this project are recorded here. Format loosely follows
   and then sits in the context being re-read for the rest of the step.
 
 ### Fixed
+
+- **The published self-test runtime was wrong by a factor of thirteen.**
+  `README.md`, `SKILL.md`, `CLAUDE.md` and the module docstring all said the
+  self-test ran "in under a minute". Two runs on 2026-09-07 measured **12 minutes
+  42 seconds** over 235 checks and **18.7 minutes** over 249 - it is real
+  subprocesses doing real git work, and it has grown with every section added
+  since that claim was first written. A run now ends with a table of where its
+  own time went, so nobody has to take a documented figure on trust again.
+
+  A wrong number is worse than a bug, because nobody goes looking for it: anybody
+  who budgeted a minute for the pre-launch gate was budgeting for the wrong thing,
+  and the likeliest response to a thirteen-minute wait they were not expecting is
+  to assume it has hung. All four places now carry the measured figure. (The
+  `[1.0.0]` entry below still says "about two minutes"; a released section is
+  never edited, and it was wrong when it was written.)
 
 - **A worker woken by its own background task is now counted once, in full.** A
   worker that backgrounds a command gets woken when it finishes, and a second

@@ -34,7 +34,7 @@ somebody did, or an older install left one behind: `--force` fixes it.
 | file | what |
 |---|---|
 | `overnight.py` | the runner - the whole orchestrator, one file |
-| `selftest.py` | drives every path against `fake_worker.py` in under a minute |
+| `selftest.py` | drives every path against `fake_worker.py`; ~15-20 min, or `--only`/`--from` for part of it |
 | `fake_worker.py` | a scripted stand-in for `claude -p`, for the self-test |
 | `install.py` | link this checkout in as the skill |
 | `SKILL.md` | the skill definition Claude Code reads: a short router over four modes |
@@ -112,14 +112,19 @@ has the numbers and the ranking.
 - Every change to the runner is covered by the self-test, or says why not. A
   guard for a defect must be shown to FAIL against the code before the fix.
 - **While working, run only the self-test sections relevant to the work. The
-  FULL suite runs before a commit and push, every time.** The full suite is 12
-  min 42 s (measured 2026-09-07, 235 checks), which is not a test loop, and the
-  honest consequence of paying it on every iteration is that it gets skipped.
-  Running it by section needs `selftest.py` to accept one - piece 0 of
-  `docs/plan-v1.0.2.md`; until that lands, a scratch script importing
-  `selftest as S` and reusing `make_repo`/`run_runner`/`ledger` is the way, and
-  its assertions must be kept in step with the suite or it reports stale
-  failures.
+  FULL suite runs before a commit and push, every time.** The full suite runs
+  12-19 min (measured 2026-09-07 at 235 and 249 checks), which is not a test
+  loop, and the honest consequence of paying it every iteration is that it gets
+  skipped.
+  `python selftest.py --list` names the sections and what each costs;
+  `--only 13,17` runs those and whatever they need, `--from 17` runs the rest.
+  A partial run prints `SELFTEST PARTIAL OK` and never `SELFTEST PASS`, so it
+  cannot be mistaken for the suite a launch is gated on.
+- **Every section declares how many checks it makes, and the suite fails if a
+  section makes a different number.** A check silently dropped - or a whole
+  section dropped out of `SECTIONS` - otherwise still ends in `SELFTEST PASS`,
+  and the suite gets quietly weaker with nothing to show for it. When you add a
+  check, the failure names the new number; put it in `SECTIONS`.
 - Changes that alter a running contract (step ids, gate forms, the state file,
   the `overnight/` layout) are noted in `README.md` as well as the code.
 - **Every version gets release notes at `docs/releases/v<x.y.z>.md`, written
