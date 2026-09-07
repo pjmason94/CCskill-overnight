@@ -419,6 +419,7 @@ def load_spec(path):
     if not isinstance(steps, list) or not steps:
         raise SpecError("`steps` must be a non-empty list")
     seen = set()
+    unsized = []
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
             raise SpecError(f"step {i} is not a mapping")
@@ -434,6 +435,32 @@ def load_spec(path):
         step["kind"] = kind
         if kind == "build" and not step.get("brief"):
             raise SpecError(f"step {sid!r}: a build step needs a `brief` file")
+        # A BUILD STEP STILL TO RUN MUST CARRY AN ESTIMATE, and the refusal is at
+        # PLAN time because that is where the fault is. Two reasons, and the
+        # second is the one that earns a hard refusal rather than a warning:
+        #
+        #  - the clock cannot decline to start a step it cannot size, so an
+        #    unsized step is precisely the one that overruns the morning;
+        #  - a step nobody could size is a step nobody scoped. Across one 36-step
+        #    plan, every build step carrying an estimate finished in 8-24 minutes
+        #    and every step carrying none ran 28, 33, 52, 53, 54, 119 and 151.
+        #    Writing a number does not make work faster - it is evidence that the
+        #    work was understood well enough to be handed to a worker alone.
+        #
+        # ONLY STEPS STILL TO RUN, meaning those with no `done:` block. A
+        # completed step's estimate is moot because its actual is recorded, and
+        # rewriting history to satisfy a new rule teaches nobody anything.
+        if kind == "build" and not step.get("done"):
+            est = step.get("expected_min")
+            if est is None:
+                unsized.append(sid)
+            else:
+                try:
+                    if float(est) <= 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    raise SpecError(f"step {sid!r}: expected_min must be a positive"
+                                    f" number of minutes, not {est!r}")
         if kind == "review":
             if not step.get("of"):
                 raise SpecError(f"step {sid!r}: a review step needs `of: <step id>`")
@@ -456,6 +483,16 @@ def load_spec(path):
             _validate_gate(gate, sid)
     for gate in run.get("gates") or []:
         _validate_gate(gate, "run")
+    # Collected rather than raised on the first, so one edit fixes the plan
+    # instead of one launch per missing number.
+    if unsized:
+        raise SpecError(
+            f"build step(s) with no `expected_min`: {', '.join(unsized)}."
+            " Every build step still to run needs an estimate in minutes. The"
+            " clock uses it to decline to START a step it cannot finish before"
+            " the stop time, and a step nobody can size is a step nobody scoped -"
+            " which is a planning failure, and cheaper to fix here than at 03:00."
+            " Steps that have already run are exempt: their actual is recorded.")
     return data
 
 
@@ -744,6 +781,10 @@ class Runner:
         self.stop_at, self.clock_source = self.resolve_clock()
         self.hours = (self.stop_at - time.time()) / 3600
         self._ran_this_session = set()
+        # (steps passed over, the step that ran instead) - one entry per departure
+        # from the plan's written order. Empty on almost every run, and loud in
+        # SUMMARY.md when it is not.
+        self.reordered = []
         # -- the wall -------------------------------------------------------
         # A worker that returns NOTHING is not a worker that wrote bad code, and
         # the runner used to be unable to tell the two apart: on 2026-09-07 the
@@ -820,6 +861,60 @@ class Runner:
             hours = float(self.run_cfg["hours"])
             return time.time() + hours * 3600, f"run.hours {hours:g} in the spec"
         return time.time() + 6 * 3600, "the default of 6 h (no until, no hours)"
+
+    def choose(self, todo, session):
+        """The first step that can FINISH before the stop time, or None.
+
+        A step whose estimate does not fit the time left is recorded `NOT RUN`
+        and passed over, and a later, smaller step runs in its place. Stopping
+        the run instead was the obvious alternative and is worse: it throws away
+        the rest of the night over a hazard the runner can state plainly.
+
+        THE HAZARD, WHICH IS REAL. The plan carries no record of what feeds a
+        step or what a step feeds, so skipping ASSUMES the passed-over step was
+        not a prerequisite of the one that runs instead. Nothing here can check
+        that. The assumption is therefore made loudly - in the log at the moment
+        it is taken, and again in SUMMARY.md - rather than quietly.
+
+        Only a build step is sized, and only a build step is long enough for this
+        to matter. Declining to start a review because the clock is close would
+        leave a passing build unreviewed until somebody relaunches, which costs
+        more than running a few minutes over.
+        """
+        passed_over = []
+        for step in todo:
+            left = (self.stop_at - time.time()) / 60
+            est = step.get("expected_min")
+            if step["kind"] != "build":
+                # A review or a reflect is never announced as the step that ran
+                # "in place of" a skipped build. The review of a build just passed
+                # over is about to be SKIPPED anyway, and naming it as the
+                # replacement would make the log say the opposite of what
+                # happened. Leave it in the queue; the next iteration takes it.
+                if passed_over:
+                    continue
+                return step
+            if not est or float(est) <= left:
+                if passed_over:
+                    self.log(f"    PLAN ORDER DEPARTED FROM: {len(passed_over)} step(s)"
+                             f" did not fit the time left - {', '.join(passed_over)}."
+                             f" `{step['id']}` runs in their place. NOTHING VERIFIES"
+                             " that they were not prerequisites of it.")
+                    self.reordered.append((list(passed_over), step["id"]))
+                return step
+            # `NOT RUN` already means "no worker read the code", it resumes
+            # cleanly and it wakes nobody. The note has to say WHICH kind of
+            # NOT RUN this is, because the usage wall produces the other kind and
+            # the two want completely different things from the reader.
+            note = (f"not started: estimated {float(est):.0f} min against"
+                    f" {left:.0f} min left before the stop time"
+                    f" ({dt.datetime.fromtimestamp(self.stop_at):%Y-%m-%d %H:%M}).")
+            self.log(f"[{step['id']}] {NOT_RUN} - {note}")
+            self.record(step, NOT_RUN, note=note, attempts=0, minutes=0)
+            session[step["id"]] = NOT_RUN
+            self._ran_this_session.add(step["id"])
+            passed_over.append(step["id"])
+        return None
 
     def done_map(self, spec=None):
         """{step id: its done: mapping} for every step that has run."""
@@ -2091,6 +2186,10 @@ class Runner:
             "  * pending steps may be edited, removed, reordered, or new ones inserted;\n"
             "  * a new build step needs a brief file, written in the same register as\n"
             "    the existing briefs, pointing at documents rather than restating them;\n"
+            "  * a new build step needs `expected_min`, its estimated minutes. The\n"
+            "    runner refuses a plan with an unsized build step still to run, so a\n"
+            "    step without one reverts your whole rewrite. If you cannot size it,\n"
+            "    it is too big: split it until you can;\n"
             "  * the file must stay valid YAML in the same shape;\n"
             "  * do not change `run:`.\n"
             "Do not touch anything else in the repository. Do not commit; the runner\n"
@@ -2603,6 +2702,17 @@ class Runner:
                 est_cell = "-"
             rows.append(f"| `{sid}` | {e.get('kind', '')} | **{e['outcome']}** | "
                         f"{actual:.0f} | {est_cell} | {str(e.get('note', ''))[:120]} |")
+        if self.reordered:
+            rows += ["", "> **THE PLAN ORDER WAS DEPARTED FROM.** A step whose"
+                     " estimate did not fit the time left before the stop time was"
+                     " not started, and a later, smaller step ran in its place."
+                     " The plan carries no record of what feeds what, so the runner"
+                     " ASSUMED the passed-over step was not a prerequisite."
+                     " **Nothing verified that.** Check it before trusting what"
+                     " ran:", ">"]
+            for skipped, ran in self.reordered:
+                rows.append(f"> - skipped `{'`, `'.join(skipped)}`, ran `{ran}` instead")
+            rows.append("")
         rows.append("\nCumulative worker cost over every step this plan has run,"
                     f" not just this session (self-reported): ${self.cost_so_far():.2f}")
         rows.append("\n" + self.overhead_line())
@@ -2838,7 +2948,6 @@ class Runner:
             todo = [s for s in todo if s["id"] not in self._ran_this_session]
             if not todo:
                 break
-            step = todo[0]
             if time.time() > self.stop_at:
                 reason = "the clock: no step was started after the stop time"
                 self.log(f"STOP: {reason}"
@@ -2846,6 +2955,14 @@ class Runner:
                          f" set by {self.clock_source})."
                          f" {len(todo)} step(s) not started:"
                          f" {', '.join(s['id'] for s in todo)}")
+                break
+            step = self.choose(todo, session)
+            if step is None:
+                reason = ("the clock: nothing still to run fits in the time left")
+                self.log(f"STOP: {reason} before"
+                         f" {dt.datetime.fromtimestamp(self.stop_at):%Y-%m-%d %H:%M}"
+                         f" (set by {self.clock_source}). They are PENDING, not"
+                         " failed, and a relaunch picks them straight back up.")
                 break
             self._ran_this_session.add(step["id"])
             strays = self.snapshot_untracked()

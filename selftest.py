@@ -113,6 +113,7 @@ steps:
     of: s1
     on_fail: rework
   - id: s2
+    expected_min: 12
     kind: build
     title: fails twice then passes
     brief: overnight/briefs/s2.md
@@ -121,6 +122,7 @@ steps:
   - id: reflect-1
     kind: reflect
   - id: s3
+    expected_min: 10
     kind: build
     title: passes
     brief: overnight/briefs/s3.md
@@ -146,6 +148,7 @@ run:
     - {clean_tree: true}
 steps:
   - id: s1
+    expected_min: 15
     kind: build
     title: a stranger commits to the branch while this step runs
     brief: overnight/briefs/s1.md
@@ -167,6 +170,7 @@ run:
     - {clean_tree: true}
 steps:
   - id: s1
+    expected_min: 15
     kind: build
     title: the operator writes a file into their own tree mid-step
     brief: overnight/briefs/s1.md
@@ -190,6 +194,7 @@ run:
     - {clean_tree: true}
 steps:
   - id: s1
+    expected_min: 15
     kind: build
     title: the brief asks for more than the cap will pay for
     brief: overnight/briefs/s1.md
@@ -215,6 +220,7 @@ run:
     - {clean_tree: true}
 steps:
   - id: s1
+    expected_min: 15
     kind: build
     title: a step bigger than one worker's budget
     brief: overnight/briefs/s1.md
@@ -239,6 +245,7 @@ run:
     - {clean_tree: true}
 steps:
   - id: s1
+    expected_min: 15
     kind: build
     title: a stranger commits while this step runs
     brief: overnight/briefs/s1.md
@@ -262,12 +269,14 @@ run:
     - {clean_tree: true}
 steps:
   - id: s1
+    expected_min: 15
     kind: build
     title: the account's window closes during this step
     brief: overnight/briefs/s1.md
     gates:
       - cmd: python -m pytest -q tests/test_s1.py
   - id: s2
+    expected_min: 12
     kind: build
     title: must never be started while the wall stands
     brief: overnight/briefs/s2.md
@@ -1939,6 +1948,163 @@ def section_24(c):
           not (where / "overnight" / "runs" / "selftest").exists())
 
 
+CLOCK_FIT_SPEC = """\
+run:
+  name: selftest
+  hours: 1
+  attempts: 1
+  worker_timeout_min: 2
+  isolation: in-place
+  preamble: overnight/briefs/_preamble.md
+  gates:
+    - {name: suite, cmd: python -m pytest -q}
+    - {clean_tree: true}
+steps:
+  - id: s1
+    kind: build
+    title: too big for the time left
+    brief: overnight/briefs/s1.md
+    expected_min: 600
+    gates:
+      - cmd: python -m pytest -q tests/test_s1.py
+  - id: review:s1
+    kind: review
+    of: s1
+    on_fail: rework
+  - id: s2
+    kind: build
+    title: small enough to fit
+    brief: overnight/briefs/s2.md
+    expected_min: 1
+    gates:
+      - cmd: python -m pytest -q tests/test_s2.py
+"""
+
+
+def section_25(c):
+    root = c.root
+    check = c.check
+
+    print("25. `expected_min` is required, and it decides what can still start")
+
+    def prep(name, text):
+        where = make_repo(root / name)
+        (where / "overnight" / "steps.yaml").write_text(text, encoding="utf-8")
+        sh(where, "git", "add", "-A")
+        sh(where, "git", "commit", "-q", "-m", "spec", check=False)
+        return where
+
+    def listing(where):
+        """`--list` loads the spec and prints it, so it is the cheapest way to ask
+        whether a plan is acceptable at all."""
+        return subprocess.run([sys.executable, "-u", str(RUNNER), "--spec",
+                               "overnight/steps.yaml", "--list"],
+                              cwd=where, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+
+    # -- an unsized build step is a PLANNING failure ------------------------
+    # The alternative was to run it anyway and log that it could not be checked.
+    # This placement is stronger: a step nobody can size is a step nobody scoped,
+    # and letting it through to execution moves the failure somewhere it can no
+    # longer be fixed. Across one 36-step plan every build step carrying an
+    # estimate finished in 8-24 minutes and every step carrying none ran 28, 33,
+    # 52, 53, 54, 119 and 151.
+    unsized = SPEC.replace("    expected_min: 15\n", "").replace(
+        "    expected_min: 12\n", "")
+    done = listing(prep("size-refused", unsized))
+    both = done.stdout + done.stderr
+    check("a build step with no expected_min is refused, not run",
+          done.returncode != 0, both[-200:])
+    check("...and EVERY unsized step is named, so one edit fixes the plan",
+          "s1" in both and "s2" in both, both[-300:])
+    check("...and the message says what is missing and why it is a planning fault",
+          "expected_min" in both and "scoped" in both, both[-300:])
+    check("...as a sentence, not a traceback", "Traceback" not in both, both[-300:])
+
+    # ONLY STEPS STILL TO RUN. A completed step's estimate is moot - its actual is
+    # recorded - and rewriting history to satisfy a new rule teaches nobody
+    # anything. It is also what stopped the rule stranding live plans: the two real
+    # plans it was checked against had 13 and 0 unsized build steps, and 0 and 0
+    # unsized AND still to run.
+    already_ran = SPEC.replace("    expected_min: 15\n", "").replace(
+        "    brief: overnight/briefs/s1.md\n",
+        "    brief: overnight/briefs/s1.md\n    done:\n      outcome: PASS\n"
+        "      minutes: 9\n")
+    done = listing(prep("size-exempt-done", already_ran))
+    check("an unsized step that has ALREADY RUN is exempt, and the plan loads",
+          done.returncode == 0, (done.stdout + done.stderr)[-300:])
+    check("...and it is still reported, with the outcome it recorded",
+          re.search(r"^s1\s+build\s+PASS", done.stdout, re.M) is not None,
+          done.stdout[:300])
+
+    done = listing(prep("size-not-a-number",
+                        SPEC.replace("expected_min: 15", 'expected_min: "soon"')))
+    check("an expected_min that is not a positive number is refused at load",
+          done.returncode != 0 and "positive" in (done.stdout + done.stderr),
+          (done.stdout + done.stderr)[-200:])
+    done = listing(prep("size-zero", SPEC.replace("expected_min: 15", "expected_min: 0")))
+    check("...and so is zero", done.returncode != 0, (done.stdout + done.stderr)[-200:])
+
+    # -- a step that will not fit is skipped, not the end of the run --------
+    # Stopping the run was the alternative, on the grounds that skipping can build
+    # on ground that was never laid. Skipping wins because stopping throws away the
+    # rest of the night over a hazard the runner can state plainly - and it states
+    # it twice, in the log and in the summary, because nothing here can check it.
+    scenario = root / "scenario-25.json"
+    scenario.write_text(json.dumps({"s2": ["pass"]}), encoding="utf-8")
+    where = prep("size-skips", CLOCK_FIT_SPEC)
+    done = run_runner(where, scenario, "--hours", "1")
+    entries = ledger(where)
+
+    check("a step whose estimate exceeds the time left is NOT RUN",
+          entries.get("s1", {}).get("outcome") == "NOT RUN", str(entries.get("s1")))
+    note = str(entries.get("s1", {}).get("note", ""))
+    check("...and the note names BOTH figures - the estimate and the time left",
+          "600" in note and "min left" in note, note)
+    check("...and reads as a clock decision, not as a usage-wall casualty",
+          "stop time" in note and "returned nothing" not in note, note)
+    check("...and no worker was spawned for it",
+          entries.get("s1", {}).get("attempts") == 0, str(entries.get("s1")))
+    check("a later, smaller step runs in its place",
+          entries.get("s2", {}).get("outcome") == "PASS", str(entries.get("s2")))
+    check("the log says the plan order was departed from, naming both steps",
+          "PLAN ORDER DEPARTED FROM" in done.stdout
+          and "s1" in done.stdout.split("PLAN ORDER DEPARTED FROM")[1][:200]
+          and "s2" in done.stdout.split("PLAN ORDER DEPARTED FROM")[1][:200],
+          done.stdout[-400:])
+    check("...and says plainly that nothing verified they were independent",
+          "NOTHING VERIFIES" in done.stdout, done.stdout[-400:])
+
+    summary = (where / "overnight" / "runs" / "selftest" / "SUMMARY.md").read_text(
+        encoding="utf-8")
+    check("SUMMARY.md carries the departure too - the log is not read every morning",
+          "THE PLAN ORDER WAS DEPARTED FROM" in summary, summary[-500:])
+    check("...and names which step was skipped and which ran instead",
+          "skipped `s1`, ran `s2` instead" in summary, summary[-500:])
+    check("...and says the runner ASSUMED the skipped step was not a prerequisite",
+          "prerequisite" in summary and "Nothing verified that" in summary,
+          summary[-500:])
+
+    spec_now = yaml.safe_load(spec_text(where))
+    skipped_step = next(s for s in spec_now["steps"] if s["id"] == "s1")
+    check("the skipped step is RESUMABLE - a relaunch picks it straight back up",
+          is_resumable(skipped_step), str(skipped_step.get("done")))
+    check("the review of a step that never ran is SKIPPED, not run against nothing",
+          entries.get("review:s1", {}).get("outcome") == "SKIPPED",
+          str(entries.get("review:s1")))
+
+    # -- when nothing left fits at all -------------------------------------
+    where = prep("size-nothing-fits", CLOCK_FIT_SPEC)
+    done = run_runner(where, scenario, "--hours", "1", "--only", "s1")
+    entries = ledger(where)
+    check("when nothing still to run fits, the run STOPS rather than marching on",
+          "nothing still to run fits" in done.stdout, done.stdout[-300:])
+    check("...and says they are pending, not failed",
+          "PENDING, not" in done.stdout, done.stdout[-300:])
+    check("...and the step is NOT RUN, which resumes cleanly",
+          entries.get("s1", {}).get("outcome") == "NOT RUN", str(entries.get("s1")))
+
+
 SECTIONS = [
     # key   needs        checks  function
     ("1",   (),          70,   section_1_3,
@@ -1964,6 +2130,7 @@ SECTIONS = [
     ("22",  (),          17,   section_22, "a cut-off worker is continued"),
     ("23",  (),          12,   section_23, "stranded work is retested, not discarded"),
     ("24",  (),          20,   section_24, "the clock: --until, and the stop it enforces"),
+    ("25",  (),          23,   section_25, "expected_min is required, and it schedules"),
 ]
 
 TOTAL_CHECKS = sum(s[2] for s in SECTIONS)

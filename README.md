@@ -123,8 +123,12 @@ change.
 
 **3. Run the self-test.** It drives every path of the runner against a fake
 worker in a throwaway repository, for no tokens. Put the kettle on: it is
-**minutes, not seconds** - measured at 12 min 42 s and 18.7 min on 2026-09-07,
-over 235 and 249 checks. Every run ends with a table of where its own time went.
+**minutes, not seconds**, and how many varies a lot with what else the machine
+is doing - five runs on 2026-09-07 measured between 6.8 and 19.0 minutes, over
+235 to 292 checks. The spread is not the checks: the fastest run was uniformly
+faster across sections that had not changed at all. Budget twenty minutes and be
+pleased when it is less. Every run ends with a table of where its own time went,
+so you need not trust this figure for long.
 
     python selftest.py
 
@@ -255,6 +259,24 @@ it resolved to, and so does the `STOP:` line when the clock ends the run:
 
     the clock: --until 07:30 - no step is STARTED after 2026-09-08 07:30
     (8.4 h from now). A step already running is never interrupted by it.
+
+**A step that will not fit is skipped, not started.** Before each step the runner
+compares its `expected_min` against the time left. A build step that cannot
+finish records `NOT RUN` — naming both figures, so it reads as a clock decision
+and not as a usage-wall casualty — and the runner takes the next step that does
+fit. `NOT RUN` resumes cleanly and wakes nobody. When nothing left fits, the run
+stops and says the rest are pending, not failed.
+
+Only build steps are sized. A review is never declined for the clock: leaving a
+passing build unreviewed until somebody relaunches costs more than running a few
+minutes over.
+
+**Skipping ahead assumes the passed-over step was not a prerequisite, and nothing
+verifies that.** The plan carries no record of what feeds what. The alternative —
+stopping the run — throws away the rest of the night over a hazard that can
+instead be stated plainly, so the runner states it: once in the log at the moment
+it is taken, and again at the top of `SUMMARY.md`, naming which step was skipped
+and which ran in its place. Check it before trusting what ran.
 
 ### Build steps
 
@@ -605,7 +627,7 @@ where the run directory is and that the tree is off limits.
 | `of` | review (required) | the id of an EARLIER step |
 | `on_fail` | review | `record`, `rework` (default), `revert` |
 | `model`, `effort` | build, review, reflect | override the kind's default tier |
-| `expected_min` | any | a plan-time estimate; recorded beside the actual (section 14). Never terminates anything |
+| `expected_min` | **required on every build step still to run** | estimated minutes. The clock uses it to decline to START a step it cannot finish, and it is recorded beside the actual (section 14). An unsized build step refuses the whole plan at load |
 | `timeout_min` | any with a worker | hard kill; belongs at roughly 2.5x `expected_min`, never at the estimate |
 | `budget_usd` | any with a worker | this step's own cap, overriding `run.budget_usd_per_step`. Must be a positive number; a bad value is refused at load, not at 2am |
 | `gates` | build, gate | this step's own gates, run before the universal ones |
@@ -1101,7 +1123,7 @@ the same per call as the same work done interactively. `python tools/tally.py
 overnight/runs/<name>` re-measures any run, and reads an interactive transcript
 too, so the comparison can be repeated rather than trusted.
 
-**`expected_min` is the calibration loop.** Give every step an estimate. The
+**`expected_min` is required, and it is the calibration loop.** A build step still to run without one refuses the plan, naming every offending step. That is deliberate: a step nobody can size is a step nobody scoped, and the evidence is blunt - across one 36-step plan, every build step carrying an estimate finished in 8-24 minutes and every step carrying none ran 28, 33, 52, 53, 54, 119 and 151 minutes. Steps that have already run are exempt, because their actual is recorded and rewriting history to satisfy a new rule teaches nobody anything. The
 summary shows the actual beside it with the ratio, and marks anything past 1.5x.
 An overrun is the symptom of a step carrying more than one deliverable; the next
 plan can only be calibrated against numbers somebody kept. The hard `timeout_min`
@@ -1271,7 +1293,7 @@ repository and prints its path, and the run.log tail is printed on failure.
 | file | what |
 |---|---|
 | `overnight.py` | the runner, one file; `python overnight.py --help` |
-| `selftest.py` | every path, against the fake worker; ~15-20 min. `--list`, `--only`, `--from` run part of it |
+| `selftest.py` | every path, against the fake worker; 7-20 min depending on the machine. `--list`, `--only`, `--from` run part of it |
 | `fake_worker.py` | a scripted stand-in for `claude -p`; the behaviours are listed at its top |
 | `install.py` | link this checkout in as the skill; `--check`, `--force`, `--copy`, `--uninstall` |
 | `SKILL.md` | what Claude Code reads for `/overnight`: a short router over the four modes |

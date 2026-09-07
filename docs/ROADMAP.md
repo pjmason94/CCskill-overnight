@@ -199,13 +199,19 @@ window from committing mid-step, which is what the worktree closes.
 
 **The design for the worktree itself is `design/worktree-isolation.md`.**
 
-## 3. `expected_min` used, not just recorded
+## 3. `expected_min` calibrated against history - the half still open
 
-`expected_min` is now recorded beside the actual and shown in `SUMMARY.md` as a
-ratio, with anything over 1.5x marked. The next move is to use the history: read
-previous runs' actuals when planning, and warn at plan time when a step's estimate
-is out of line with what steps of that shape have actually taken. Needs runs to
-accumulate first.
+**The scheduling half landed with roadmap 11** (see Done): `expected_min` is now
+required on every build step still to run, and the clock uses it to decline to
+START a step it cannot finish before the stop time.
+
+What remains is calibration. The estimate is still whatever the planner asserted,
+and nothing checks it against what steps of that shape have actually taken. The
+move is to read previous runs' actuals when planning and warn when an estimate is
+out of line with the history. Needs runs to accumulate first - and it matters more
+now than it did, because a wrong estimate no longer just skews a ratio in the
+summary: too high and a step that would have fitted is skipped, too low and the
+run overshoots the deadline it was given.
 
 ## 8. Hold the run to the efficiency bar
 
@@ -297,6 +303,17 @@ decisions that followed, would be worth more than any amount of prose about it.
 
 ## Done
 
+- **`expected_min` is required, and it schedules** (the scheduling half
+  of item 3). A build step still to run without an estimate refuses the plan at
+  load, naming every offending step: a step nobody can size is a step nobody
+  scoped, and letting it through moves the failure somewhere it cannot be fixed.
+  Steps that have already run are exempt. The clock then uses the estimate -
+  a step that cannot finish before the stop time is `NOT RUN` with both figures
+  in its note, and the next step that fits runs instead. The departure from the
+  plan's written order is announced in the log and at the top of `SUMMARY.md`,
+  because nothing records what feeds what and so nothing can verify that the
+  skipped step was not a prerequisite. That gap is the step-dependency rework,
+  still open.
 - **`--until`, not `--hours`** (originally item 11). The clock is a moment, not a
   duration: `--until 07:30` is the next 07:30, `--until "2026-09-08 07:30"` one
   exact moment, and `run.until` sits in the spec beside `run.hours`. A duration

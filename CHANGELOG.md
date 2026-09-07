@@ -7,6 +7,38 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Added
 
+- **`expected_min` is required on every build step still to run, and the clock
+  now uses it.** A plan with an unsized build step is refused at load, naming
+  every offending step so one edit fixes it. Steps that have already run are
+  exempt - their actual is recorded, and rewriting history to satisfy a new rule
+  teaches nobody anything.
+
+  The refusal is deliberate and it is placed at planning, not execution: a step
+  nobody can size is a step nobody scoped. Across one 36-step plan, every build
+  step carrying an estimate finished in 8-24 minutes and every step carrying none
+  ran 28, 33, 52, 53, 54, 119 and 151. Writing a number does not make work
+  faster - it is evidence the work was understood well enough to hand to a worker
+  alone.
+
+  With every step sized, the clock can schedule. A build step that cannot finish
+  before the stop time is not started: it records `NOT RUN` with both figures in
+  its note - the estimate and the minutes left - so it reads as a clock decision
+  and not as a usage-wall casualty, the other thing that produces `NOT RUN`. The
+  runner then takes the next step that does fit. When nothing left fits, the run
+  stops and says the remaining steps are pending, not failed. Reviews are never
+  declined for the clock: leaving a passing build unreviewed until somebody
+  relaunches costs more than running a few minutes over.
+
+  **Skipping ahead assumes the passed-over step was not a prerequisite of the one
+  that runs instead, and nothing verifies that.** The plan carries no record of
+  what feeds what. Stopping the run was the alternative and it is worse - it
+  throws away the rest of the night over a hazard that can be stated plainly
+  instead - so the runner states it twice: in the log at the moment the decision
+  is taken, and at the top of `SUMMARY.md`, naming which step was skipped and
+  which ran in its place.
+
+  New self-test section 25, twenty-three checks.
+
 - **The clock is a time of day now, not a duration.** `--until 07:30` stops the
   runner STARTING new steps at the next 07:30 - tomorrow's, if today's has
   passed - and `--until "2026-09-08 07:30"` names one exact moment. `run.until`
@@ -38,7 +70,7 @@ All notable changes to this project are recorded here. Format loosely follows
   rest of the suite. A partial run prints `SELFTEST PARTIAL OK` and **never**
   `SELFTEST PASS`, so it cannot be mistaken for the gate a launch requires.
 
-  The suite is fifteen to twenty minutes, which is not a test loop, and the honest
+  The suite runs to twenty minutes, which is not a test loop, and the honest
   consequence of paying it on every iteration is that it gets skipped. Fifteen of
   the sections already built their own repository and stood alone; the four
   that read a fixture an earlier section left in a particular state now declare
@@ -141,6 +173,10 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ### Changed
 
+- **A reflect worker is now told that a new build step needs `expected_min`**,
+  and that a step it cannot size is one it should split. Without the estimate the
+  rewritten plan no longer loads, and the runner reverts the whole rewrite.
+
 - **Work a crashed run left on a scratch branch is now RETESTED, not thrown
   away.** A crash can land after a worker has committed and passed its gates but
   before the run integrated it, leaving a finished step on its scratch branch and
@@ -223,8 +259,10 @@ All notable changes to this project are recorded here. Format loosely follows
 
 - **The published self-test runtime was wrong by a factor of thirteen.**
   `README.md`, `SKILL.md`, `CLAUDE.md` and the module docstring all said the
-  self-test ran "in under a minute". Two runs on 2026-09-07 measured **12 minutes
-  42 seconds** over 235 checks and **18.7 minutes** over 249 - it is real
+  self-test ran "in under a minute". Five runs on 2026-09-07 measured between
+  **6.8 and 19.0 minutes** over 235 to 292 checks - and the spread is the
+  machine rather than the checks, since the fastest run was uniformly faster
+  across sections that had not changed. It is real
   subprocesses doing real git work, and it has grown with every section added
   since that claim was first written. A run now ends with a table of where its
   own time went, so nobody has to take a documented figure on trust again.

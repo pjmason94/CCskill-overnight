@@ -156,9 +156,12 @@ reset that destroys the code.
 
 ## 7. Estimate, and hand over
 
-Give `expected_min` on every build step - it is recorded beside the actual, it is
-how the next plan gets calibrated (section 1), and a step you cannot put a number
-to is a step you have not finished cutting. Set `timeout_min` at roughly **2.5x**
+`expected_min` is REQUIRED on every build step. The runner refuses to load a
+plan with an unsized build step still to run, naming every one of them, so this
+is not advisory: a plan that omits it does not launch. It is how the clock
+decides whether a step can still be started, it is recorded beside the actual so
+the next plan gets calibrated (section 1), and a step you cannot put a number to
+is a step you have not finished cutting - split it until you can. Set `timeout_min` at roughly **2.5x**
 the estimate, never at the estimate: killing a worker at its expected time
 destroys the work that was about to be committed.
 

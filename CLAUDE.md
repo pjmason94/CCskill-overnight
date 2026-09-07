@@ -34,7 +34,7 @@ somebody did, or an older install left one behind: `--force` fixes it.
 | file | what |
 |---|---|
 | `overnight.py` | the runner - the whole orchestrator, one file |
-| `selftest.py` | drives every path against `fake_worker.py`; ~15-20 min, or `--only`/`--from` for part of it |
+| `selftest.py` | drives every path against `fake_worker.py`; 7-20 min, or `--only`/`--from` for part of it |
 | `fake_worker.py` | a scripted stand-in for `claude -p`, for the self-test |
 | `install.py` | link this checkout in as the skill |
 | `SKILL.md` | the skill definition Claude Code reads: a short router over four modes |
@@ -113,7 +113,8 @@ has the numbers and the ranking.
   guard for a defect must be shown to FAIL against the code before the fix.
 - **While working, run only the self-test sections relevant to the work. The
   FULL suite runs before a commit and push, every time.** The full suite runs
-  12-19 min (measured 2026-09-07 at 235 and 249 checks), which is not a test
+  7-19 min across five measurements on 2026-09-07 (235 to 292 checks; the
+  spread is machine load, not checks), which is not a test
   loop, and the honest consequence of paying it every iteration is that it gets
   skipped.
   `python selftest.py --list` names the sections and what each costs;

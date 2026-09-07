@@ -379,7 +379,11 @@ def main():
             brief_dir = spec_path.parent / "briefs"
             brief_dir.mkdir(exist_ok=True)
             (brief_dir / f"{new_id}.md").write_text("Build the added thing.\n", encoding="utf-8")
+            # `expected_min` because a build step without one no longer loads, and
+            # a reflect step rewrites the plan the runner is about to re-read. A
+            # real reflect worker is told the same thing by its brief.
             text += (f"  - id: {new_id}\n    kind: build\n    title: added by reflect\n"
+                     f"    expected_min: 12\n"
                      f"    brief: {(brief_dir / (new_id + '.md')).relative_to(repo).as_posix()}\n"
                      f"    gates:\n      - cmd: python -m pytest -q tests/test_{re.sub(r'[^a-z0-9_]', '_', new_id)}.py\n")
             spec_path.write_text(text, encoding="utf-8")

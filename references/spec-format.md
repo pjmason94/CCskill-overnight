@@ -53,7 +53,12 @@ steps:
     brief: overnight/briefs/2a-parser.md
     model: sonnet                # per-step tier override
     effort: medium
-    expected_min: 15             # recorded beside the actual; terminates nothing
+    expected_min: 15             # REQUIRED on a build step still to run. The
+                                 # clock declines to START a step that cannot
+                                 # finish before the stop time; it is also
+                                 # recorded beside the actual. A step you
+                                 # cannot size is one you have not finished
+                                 # cutting - split it until you can
     timeout_min: 40              # hard kill; about 2.5x the estimate
     budget_usd: 6                # this step's own cap, overriding the run's
     gates:                       # this step's own, run before the universal ones
