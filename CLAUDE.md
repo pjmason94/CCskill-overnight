@@ -34,7 +34,7 @@ somebody did, or an older install left one behind: `--force` fixes it.
 | file | what |
 |---|---|
 | `overnight.py` | the runner - the whole orchestrator, one file |
-| `selftest.py` | drives every path against `fake_worker.py`; 7-20 min, or `--only`/`--from` for part of it |
+| `selftest.py` | drives every path against `fake_worker.py`; 7-19 min, or `--only`/`--from` for part of it |
 | `fake_worker.py` | a scripted stand-in for `claude -p`, for the self-test |
 | `install.py` | link this checkout in as the skill |
 | `SKILL.md` | the skill definition Claude Code reads: a short router over four modes |

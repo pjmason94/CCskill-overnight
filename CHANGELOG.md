@@ -9,7 +9,7 @@ All notable changes to this project are recorded here. Format loosely follows
 
 - **The self-test prints a progress line about once a minute** on the full
   suite: percent complete, checks done against the total, elapsed, and an ETA
-  from the mean time per check so far. The suite is 7 to 30 minutes and until
+  from the mean time per check so far. The suite is 7 to 19 minutes and until
   now printed nothing an operator could plan around, so "how long" could only be
   answered with a range too wide to use - which happened twice in one session.
   The denominator is `TOTAL_CHECKS`, known before the run starts; the ETA tracks
@@ -93,6 +93,82 @@ All notable changes to this project are recorded here. Format loosely follows
   in-band judgement step shares a failure mode with the outage it is meant to
   catch. And **Assessing the code itself**: why cyclomatic complexity and the
   Maintainability Index mislead as depth measures, and what to use instead.
+
+### Fixed
+
+- **A step whose own tier is wrong no longer costs the whole night.** A `model`,
+  `effort` or budget value the CLI rejects makes a worker die with no result
+  event before it reaches the API - which is byte-for-byte what a usage wall
+  looks like. The run therefore called the wall, parked, probed, got an answer,
+  put the same step back at the head of the queue, went barren again, and parked
+  again, every `park_poll_min` until morning, with the rest of the plan never
+  started. The breaker now remembers which steps it walled on: **a step that goes
+  barren to the threshold a second time, after a probe has answered, is the step
+  and not the environment.** It is recorded `BARREN` - a new blocking outcome,
+  resumable once a person has changed something - with the failing command and
+  what it printed in the note, and the run takes the next step. Two facts the
+  runner already held, compared; no extra model in the loop.
+
+- **A reflect whose worker never answered was recorded `REFLECT NO CHANGE`.**
+  Validation asks one question - did the plan change? - and a worker that died
+  before starting leaves it unchanged, so a reflect that never happened was
+  indistinguishable in the ledger from one that considered the plan and found it
+  sound. It was benign for the exit code and complete on a resume, so the morning
+  read it as a judgement nobody had made. It is now `REFLECT INCONCLUSIVE`:
+  non-benign, re-run on the next launch, with the exit code and what the worker
+  said in the note. Measured on a real run of 2026-09-07 (`reflect-3`,
+  `NO CHANGE`, $0.00).
+
+- **The diagnostic is skipped when both attempts returned nothing.** It exists to
+  read the transcripts of attempts 1 and 2; when both workers were barren, both
+  transcripts are the CLI's own error message, and an opus worker was being paid
+  to summarise it - spawned into whatever had stopped the other two, so it was
+  usually the third barren worker of the cascade and brought the wall on faster.
+  The third attempt gets no remediation plan instead.
+
+All three of the above share one predicate - *did this invocation produce
+nothing?* - which is now `Runner.is_barren`, extracted from `count_barren`
+rather than copied into each caller.
+
+- **The two files a planner actually opens still told it to gate every build
+  step on the full suite.** `1.0.3` corrected `references/planning.md` and the
+  README and left `references/spec-format.md` and `examples/steps.example.yaml`
+  showing `{name: full suite, cmd: python -m pytest -q}` under `run.gates`,
+  annotated "appended to EVERY build step" - one being the reference for the key
+  format and the other the file a new plan is copied from. Both now carry a
+  cheap, local universal gate, the example grows a `checkpoint-1` step carrying
+  the suite, and `--format`'s embedded reference says the same. This was the one
+  finding of the 2026-09-08 audit that was costing nights while it stood.
+
+- **`NEEDS MERGE` is documented where a blocked run is read.** It is one of the
+  four blocking outcomes in the runner and was in the README alone: `SKILL.md`
+  and `spec-format.md` named three causes of BLOCKED, and `references/blocked.md`
+  had no procedure for the one outcome where the user must do something with git
+  before relaunching. `blocked.md` now covers what to report and how to land the
+  scratch branch, and both files name the fourth cause. It is also the one
+  outcome that is blocking and yet **complete** for a resume - the work exists,
+  so re-running the step would do it twice - which the README now says in the
+  resume rules rather than only in the isolation section.
+
+- **`run.isolation`, `run.worktree_link` and `run.worktree_root` are in the
+  `run:` key table**, which `spec-format.md` calls exhaustive and which omitted
+  all three - while the preflight refusal message tells the user to "list the
+  paths under `run.worktree_link:`". The three controls for the isolation that
+  became the default in `1.0.3` now have a row each and a paragraph on when to
+  reach for which.
+
+- Wording, all found by the same audit: the composed brief's order omitted the
+  tool-usage note that sits between the header and the brief; `--progress` and
+  `--run` were missing from the flag table; the layout diagram omitted
+  `briefs/_reflect.md` and the morning reading order omitted
+  `discarded-commits.md`; `--format`'s reference said the build default was
+  opus/medium; the self-test's runtime was quoted as both "7-20" and "6.8-19.0"
+  minutes; `README.md` pointed at an example brief, `first-thing.md`, that has
+  never existed. `references/planning.md` now says plainly that its brief-quality
+  rules are advisory - the runner never reads a brief - and `README.md` says
+  where a run's percentage lives, given that the per-minute heartbeat is
+  deliberately liveness only. Four em-dashes in `README.md`, the only non-ASCII
+  characters in the repository, are now hyphens.
 
 ## [1.0.2] - 2026-09-08
 

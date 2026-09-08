@@ -17,8 +17,9 @@ the scratch directory. `--keep` leaves the repository behind to poke at.
 
 You will see, in order: a build step pass and commit; a review return **rework**
 and a second attempt land on top of the reviewed commit; a build fail its gate,
-reset, and pass on the retry; a reflect decide the plan needs no change; a last
-build and a review that passes. Then the digest and `SUMMARY.md`.
+reset, and pass on the retry; a checkpoint run the whole suite for no tokens; a
+reflect decide the plan needs no change; a last build and a review that passes.
+Then the digest and `SUMMARY.md`.
 
 Needs `git` and `pytest`.
 
@@ -26,7 +27,7 @@ Needs `git` and `pytest`.
 
 | file | what it demonstrates |
 |---|---|
-| `steps.example.yaml` | the plan: universal gates, per-step gates, tiers, where reviews and reflects go, `expected_min` against `timeout_min` |
+| `steps.example.yaml` | the plan: cheap universal gates, per-step gates, the checkpoint that carries the full suite, tiers, where reviews and reflects go, `expected_min` against `timeout_min` |
 | `briefs/_preamble.md` | the rules every worker gets: commit by explicit path, write findings as you learn them, what never to do |
 | `briefs/parse-durations.md` | a build brief: read first, one deliverable, named test node ids, what NOT to touch |
 | `briefs/humanise.md` | a second brief, deliberately independent of the first |
@@ -43,6 +44,8 @@ to `<your project>/overnight/briefs/`, then replace the contents. Keep the shape
 - every behavioural exit criterion is a **named test node id**, identical in the
   brief and in the gate;
 - every brief says what the step must **not** do;
+- universal gates stay cheap and local, and the full suite sits in a `kind: gate`
+  checkpoint every three to five builds - never on a build step;
 - a review after any step that sets a shape later steps build on;
 - a reflect after every block of three to five.
 

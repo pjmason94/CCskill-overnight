@@ -296,6 +296,64 @@ steps:
       - cmd: python -m pytest -q tests/test_s2.py
 """
 
+# THE BREAKER'S BLIND SPOT. Same shape as WALL_SPEC - one step that goes barren
+# and one that must still get its turn - but `expected_min: 1` so the whole plan
+# fits in a two-minute clock, which is what bounds the demonstration of the OLD
+# behaviour: without the fix this run parks, re-runs s1, parks again, and does
+# that until the stop time rather than for the hour WALL_SPEC allows.
+BARREN_SPEC = """\
+run:
+  name: wall
+  hours: 1
+  attempts: 3
+  worker_timeout_min: 2
+  park_poll_min: 0.02
+  preamble: overnight/briefs/_preamble.md
+  gates:
+    - {name: suite, cmd: python -m pytest -q tests/test_base.py}
+    - {clean_tree: true}
+steps:
+  - id: s1
+    expected_min: 1
+    kind: build
+    title: its own tier is wrong, so its workers never start
+    brief: overnight/briefs/s1.md
+    gates:
+      - cmd: python -m pytest -q tests/test_s1.py
+  - id: s2
+    expected_min: 1
+    kind: build
+    title: must still get its turn
+    brief: overnight/briefs/s2.md
+    gates:
+      - cmd: python -m pytest -q tests/test_s2.py
+"""
+
+# A reflect whose worker never answers. One build step first so the reflect has
+# something to reflect over, and the wall threshold is never reached - the point
+# is the SINGLE barren reflect, not a cascade.
+BARREN_REFLECT_SPEC = """\
+run:
+  name: wall
+  hours: 1
+  attempts: 1
+  worker_timeout_min: 2
+  preamble: overnight/briefs/_preamble.md
+  gates:
+    - {name: suite, cmd: python -m pytest -q tests/test_base.py}
+    - {clean_tree: true}
+steps:
+  - id: s1
+    expected_min: 1
+    kind: build
+    title: passes normally
+    brief: overnight/briefs/s1.md
+    gates:
+      - cmd: python -m pytest -q tests/test_s1.py
+  - id: reflect-1
+    kind: reflect
+"""
+
 SCENARIO = {
     "s1": ["pass"],
     # `+stray`: the reviewer leaves an untracked file behind. The reset that
@@ -430,7 +488,7 @@ class Ctx:
     def start_heartbeat(self, total, every=60.0):
         """One progress line a minute, on the FULL suite only.
 
-        The suite is 7 to 30 minutes and, until this existed, printed nothing an
+        The suite is 7 to 19 minutes and, until this existed, printed nothing an
         operator could plan around: "how long" could only be answered with a
         range too wide to be useful. The percentage is what makes the answer a
         number. The denominator is TOTAL_CHECKS, known before the run starts, and
@@ -1208,9 +1266,9 @@ def section_15(c):
     # morning showed a plan whose every step needed re-running and a summary
     # full of findings about code no worker had ever read.
 
-    def wall_repo(name, scenario, *extra):
+    def wall_repo(name, scenario, *extra, spec=WALL_SPEC):
         where = make_repo(root / name)
-        (where / "overnight" / "steps.yaml").write_text(WALL_SPEC, encoding="utf-8")
+        (where / "overnight" / "steps.yaml").write_text(spec, encoding="utf-8")
         sh(where, "git", "add", "-A")
         sh(where, "git", "commit", "-q", "-m", "wall spec")
         scen = root / f"scenario-{name}.json"
@@ -1305,6 +1363,84 @@ def section_15(c):
                          encoding="utf-8").stdout
     check("the one-line report says PARKED, not the step it stopped on",
           "PARKED (waiting for the account, not stuck)" in one, one)
+
+    # THE BREAKER'S BLIND SPOT (F2b). The probe answers - the account is up -
+    # and this one step's workers still return nothing, which is the shape of a
+    # mistyped `model`, `effort` or budget: the CLI rejects the flag before it
+    # makes an API call, so the worker dies with no result event, which is
+    # exactly what a usage wall looks like. Before this, the run parked, put the
+    # step back at the head of the queue, went barren again, and parked again,
+    # every park_poll_min until morning - a whole night spent on one typo, with
+    # the rest of the plan never started.
+    # `--hours 0.08` BOUNDS THE FAILURE, and is the only reason this test can be
+    # left in a suite people wait for: with the fix it finishes in seconds, and
+    # if the fix ever regresses the run parks in a loop and is stopped by the
+    # clock five minutes later instead of running until the spec's hour is up.
+    # Five and not three: the bound has to clear two full rounds of s1 - three
+    # attempts each, two pytest gates an attempt - a park, and then s2's own
+    # minute, or a loaded machine fails the `takes the next step` check below
+    # as a clock artefact rather than a regression.
+    barren, done, blog = wall_repo(
+        "barren-step",
+        {"s1": ["wall"], "s1#diag": ["wall"], "s2": ["pass"], "_probe": ["probe-ok"]},
+        "--hours", "0.08", spec=BARREN_SPEC)
+    bsteps = ledger(barren)
+    check("a step that stays barren while the probe answers is BARREN, not NOT RUN",
+          bsteps.get("s1", {}).get("outcome") == "BARREN", str(bsteps.get("s1")))
+    check("...and the note blames the step, not the environment",
+          "That is THIS STEP, not the environment"
+          in str(bsteps.get("s1", {}).get("note")), str(bsteps.get("s1", {}).get("note")))
+    check("...and carries the command that produced nothing, and what it said",
+          "--model" in str(bsteps.get("s1", {}).get("note"))
+          and "session limit" in str(bsteps.get("s1", {}).get("note")),
+          str(bsteps.get("s1", {}).get("note")))
+    # The whole value: the night is not spent on one step.
+    check("...so the run takes the next step instead", bsteps.get("s2", {}).get("outcome") == "PASS",
+          str(bsteps.get("s2")))
+    check("...having parked exactly once, not once per attempt at it",
+          blog.count("PARKED after") == 1, blog[-900:])
+    check("...and the barren count is reset, so s2 is not walled on its first worker",
+          "[s2] PASS" in blog, blog[-600:])
+    check("BARREN needs a person: --mode says BLOCKED",
+          subprocess.run([sys.executable, str(RUNNER), "--mode", str(barren)],
+                         capture_output=True, text=True).stdout.strip().splitlines()[0]
+          == "BLOCKED")
+    check("...and is re-run once they have changed something",
+          is_resumable(yaml.safe_load(spec_text(barren))["steps"][0]))
+    check("...and the run exits non-zero", done.returncode == 1, blog[-400:])
+    bsummary = (barren / "overnight" / "runs" / "wall" / "SUMMARY.md").read_text(
+        encoding="utf-8")
+    check("SUMMARY says which keys to look at, rather than leaving BARREN bare",
+          "`BARREN`" in bsummary and "`effort`" in bsummary, bsummary[:1400])
+    # THE THIRD BARREN WORKER OF THE CASCADE. The diagnostic reads a compact
+    # transcript of attempts 1 and 2 - and when both returned nothing, both
+    # transcripts are the CLI's own error message. An opus worker was being paid
+    # to summarise "session limit", into whatever had stopped the other two.
+    check("no diagnostic is spawned over two empty transcripts",
+          "SKIPPING the diagnostic" in blog
+          and not (barren / "overnight" / "runs" / "wall" / "s1" / "diagnostic.log").exists(),
+          blog[-1200:])
+
+    # G-4. A reflect worker that never answered leaves the plan untouched, and
+    # "untouched" was recorded as REFLECT NO CHANGE: benign for the exit code,
+    # complete on a resume, and in the morning it reads as *the plan was
+    # considered and found sound*. Measured on 2026-09-07 (`reflect-3`, NO
+    # CHANGE, $0.00). The wall is never reached here - one barren reflect is
+    # enough, which is the point.
+    refl, rdone, rlog = wall_repo(
+        "barren-reflect", {"s1": ["pass"], "reflect-1": ["wall"]},
+        spec=BARREN_REFLECT_SPEC)
+    rsteps = ledger(refl)
+    check("a reflect whose worker returned nothing is INCONCLUSIVE, not NO CHANGE",
+          rsteps.get("reflect-1", {}).get("outcome") == "REFLECT INCONCLUSIVE",
+          str(rsteps.get("reflect-1")))
+    check("...and says the plan was not considered",
+          "this is not `no change`" in str(rsteps.get("reflect-1", {}).get("note")),
+          str(rsteps.get("reflect-1", {}).get("note")))
+    check("...is not complete: a resume runs it again",
+          is_resumable([s for s in yaml.safe_load(spec_text(refl))["steps"]
+                        if s["id"] == "reflect-1"][0]))
+    check("...and the run does not exit 0 over it", rdone.returncode == 1, rlog[-400:])
 
 
 
@@ -2191,7 +2327,7 @@ SECTIONS = [
     ("12",  (),          7,   section_12, "one runner per repository"),
     ("13",  (),          17,   section_13, "worktree isolation"),
     ("14",  (),          8,   section_14, "isolation is the default"),
-    ("15",  (),          18,   section_15, "the usage wall"),
+    ("15",  (),          33,   section_15, "the usage wall, and the step it cannot see"),
     ("16",  (),          4,   section_16, "a worker's text cannot be printed"),
     ("17",  (),          8,   section_17, "a worktree an earlier run left behind"),
     ("18",  (),          6,   section_18, "work stranded on a scratch branch"),

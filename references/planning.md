@@ -256,6 +256,14 @@ Where a step genuinely has no downstream consumer yet, say **"nothing consumes
 this yet"** rather than leaving the section out; an absent section reads as an
 oversight, and the planner cannot tell the two apart when it re-plans.
 
+**None of this section is enforced, deliberately.** The runner never reads a
+brief - it hands it to a worker - so a missing `## Feeds`, a test node id in the
+gate that the brief never mentions, and a brief carrying three deliverables all
+launch exactly like a good one. What the runner does refuse is
+arithmetic it can check: an unsized build step, a bad budget, a spec that does
+not parse. Everything above is the planner's judgement, and there is nobody
+awake to apply it later.
+
 ## 6. Ignore the run's output
 
 Add to the project's `.gitignore` if not already there:

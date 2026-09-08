@@ -9,7 +9,19 @@ done in the main context with the findings in hand.
 **Every severity-1 line was verified by reading the code before it appears
 here.** Lines marked *agent* are severity 2 or 3 and are carried as reported.
 Where a subagent's severity did not survive verification the change is stated.
-Nothing in this file has been fixed. The proposed fix set is at the end.
+The proposed fix set is at the end, and the ordering it is built in is the
+appendix after that.
+
+**Status.** Nothing here was fixed when it was written.
+
+- **Phase 1** (the document harms: F7, F6, the `run:` key table, the severity-3
+  wording) landed 2026-09-08.
+- **Phase 2** (the barren family: the `is_barren` extraction, G-4, the skipped
+  diagnostic, F2b) landed 2026-09-08. So **F2's second layer and G-4 are fixed**;
+  F2's first layer, the load-time refusal of a bad `effort` or budget, is phase 3
+  and still stands.
+
+Everything else stands.
 
 Severity: **1** = a live run behaves wrongly or wastes real time; **2** = a
 procedure misleads the planner or a user; **3** = cosmetic or stale wording.
@@ -140,6 +152,9 @@ against the same sha, likely returns the same verdict, and spends another opus
 rework. Recommend (a), and correct both documents to say so. Self-test: none
 exists for this path (T5).
 
+**DECIDED 2026-09-08, by Paul: (a), blocking.** A review whose rework failed
+stops the run for a person. Phase 4c below is unblocked and builds that.
+
 ### F6. `NEEDS MERGE` is blocking in the runner and absent from the skill's BLOCKED procedure
 
 **Claim.** `SKILL.md:28` and `36-39` - BLOCKED means STUCK, HALTED or OVER
@@ -182,7 +197,7 @@ spec key. Ranked by what breaks if the behaviour silently regressed.
 | T2 | `on_fail: record` and `on_fail: revert` (2562-2577) | only `on_fail: rework` appears in any fixture | a wrong revert resets the operator's branch; `record` spawning a rework spends opus it was told not to |
 | T3 | `kind: gate` steps (2694) | no fixture has one | a checkpoint that reports PASS without running, or FAIL that stops nothing |
 | T4 | `cmd_empty` and `fresh_shell` gate forms (1664, 1682) | neither string in selftest.py | a gate that passes on output it should fail on |
-| T5 | `REFLECT NO CHANGE` (2661), `REVIEW REWORK FAILED` (2599), bare `REWORK FAILED` (2489) | none of the three strings | see F5 and G-4 |
+| T5 | `REFLECT NO CHANGE` (2661), `REVIEW REWORK FAILED` (2599), bare `REWORK FAILED` (2489) | none of the three strings | see F5 and G-4. **Half closed in phase 2**: section 15 now covers the barren reflect, so `REFLECT NO CHANGE` has a neighbour that pins it. The two review strings are still untested and are phase 4c |
 | T6 | `--rerun` re-runs passed steps (`README.md:755`) | no occurrence | a flag that silently does nothing on the morning the operator wants it |
 
 `file:` gates, reported untested by E, are exercised once as a fixture
@@ -273,6 +288,12 @@ lines from 1,383 lines of manual, and three of them are real.
 
 ## F. The efficiency objective is mis-stated - what it should say instead
 
+**AGREED 2026-09-08, by Paul: this section stands as written.** The three
+objectives below replace the 2x bar, which retires to a footnote carrying its
+measurement. Phase 6 builds it, and stays last: phases 2 and 4 change the
+outcome vocabulary objective 1 partitions, so a classifier written before them
+is written twice.
+
 **The bar as written** (`CLAUDE.md`, and `docs/token-efficiency.md:18-20`): an
 unattended run must not be significantly more token-hungry than the same work
 done interactively; 2x is not acceptable.
@@ -302,9 +323,22 @@ from the ledger the run already keeps, in this order of importance:
    reflect, diagnostic - the deliberate price of running unsupervised, and not
    waste), and *waste* (attempts discarded, work reverted, reworks that failed,
    `STUCK` and `OVER BUDGET` steps, barren workers). The objective is a ceiling
-   on the third bucket - **15% of spend** is the number the FinKit run suggests,
-   where 9% was a defect and the rest was reworks. `overhead_line()` already
-   splits building from not-building; this is one more cut of the same data.
+   on the third bucket - **20% of spend** (Paul, 2026-09-08, raising the 15% the
+   FinKit run suggested, where 9% was a defect and the rest was reworks).
+   `overhead_line()` already splits building from not-building; this is one more
+   cut of the same data.
+
+   **A breach is REPORTED AND MONITORED, not failed** (Paul, 2026-09-08). It
+   prints in `SUMMARY.md` as a number against the ceiling and is watched across
+   runs; it does not change an exit code, refuse a plan or gate anything. The
+   reason is what the night is actually for: **an unsupervised run that is
+   effective, even at some waste, against an eight-hour interactive session at
+   opus/high.** Measured, the runner costs about half per API call and is
+   working while nobody is awake, so a run that lands its plan at 25% waste has
+   still beaten the alternative comfortably - and a bar that failed it would
+   push a planner toward timid steps and fewer reviews, which is the expensive
+   direction. The ceiling exists to catch a run that is wasting *structurally*,
+   over several nights, not to grade one.
 2. **The night is filled.** Two deterministic signals that the plan was cut to
    the wrong size, both already in the log and neither summarised: the queue
    finishing more than an hour before the stop time (under-cut), and any step
@@ -398,7 +432,8 @@ the same commit, full suite before it.
 
 Groups 1, 3 and 6 are safe to do in one sitting. Group 2 and group 4 change
 what a resume does and should each be read as a diff before the suite runs.
-Group 7 waits on Paul's yes to section F as written or amended.
+Group 7 has Paul's yes to section F as written (2026-09-08); it waits on phases
+2 and 4 rather than on a decision.
 
 ---
 
@@ -513,8 +548,9 @@ Gate: `--only 25`, which already owns load-time refusals.
   fixture (T3) written first and shown to fail.
 - **4c.** F5: `REVIEW REWORK FAILED` into `BLOCKING_OUTCOMES`, the unreachable
   bare `REWORK FAILED` resolved, `blocked.md` and the two resume-rule statements
-  corrected in the same commit. **This is the one item in the plan that is
-  blocked on a decision** - blocking, or resumable as documented.
+  corrected in the same commit. **Decided 2026-09-08: blocking.** A judgement
+  that failed twice goes to a person, not to a third worker; `blocked.md` gains
+  a fifth cause and the README's resume rules stop promising a re-run.
 
 ### Phase 5 - the remaining coverage. SM. Changes no behaviour; nothing depends on it.
 
@@ -524,7 +560,7 @@ money rather than time: one line in `fake_worker.py` exiting non-zero if any
 (`on_fail: record` and `revert`), T4 (`cmd_empty`, `fresh_shell`), T6
 (`--rerun`), and last the three proxy upgrades.
 
-### Phase 6 - the objective. FH for the wording, SM for the lines. Genuinely last.
+### Phase 6 - the objective. SM throughout now. Genuinely last.
 
 Not merely by preference. Objective 1 partitions the outcome vocabulary into
 landed, judgement and waste - and phases 2 and 4 **change that vocabulary**:
@@ -532,15 +568,23 @@ landed, judgement and waste - and phases 2 and 4 **change that vocabulary**:
 classifier written before them is written twice. Objectives 2 and 3 carry no such
 dependency but belong in the commit with the wording they serve.
 
+**The FH half is already spent.** It was writing the definitions, and section F
+is those definitions, agreed on 2026-09-08. What is left is transcription -
+replacing the `CLAUDE.md` paragraph and the head of `docs/token-efficiency.md`
+with what section F says, the 2x bar retired to a footnote carrying its
+measurement - and arithmetic over the ledger for the three `SUMMARY.md` lines.
+Both are SM. The ceiling in objective 1 is settled at 20%, reported and
+monitored rather than enforced.
+
 | phase | what | tier | blocked on |
 |---|---|---|---|
 | 1 | the live document harms | SL/SM | nothing |
 | 2 | the barren family, one piece | OM | nothing |
 | 3 | load and preflight refusals | SM | 2d's fixture shape |
 | 4a-4b | budget and gate plumbing | SM | nothing |
-| 4c | `REVIEW REWORK FAILED` | OM | **a decision** |
+| 4c | `REVIEW REWORK FAILED` -> blocking | OM | decided 2026-09-08 |
 | 5 | remaining coverage | SM | nothing |
-| 6 | the objective | FH + SM | phases 2 and 4; **a decision** |
+| 6 | the objective | SM | phases 2 and 4 (the decision came 2026-09-08) |
 
 ## Should the overnight skill implement this?
 
@@ -575,9 +619,14 @@ rather than relying on `run.gates`.
   wall path, where a subtle error mis-records a night instead of failing loudly.
   Do it interactively at OM. If it must go overnight it is **one** step, not
   four, at `sonnet/high`, with 2d split off as a second.
-- **Phase 4c**, until the blocking-or-resumable question is answered. A worker
-  will not settle that at 3am and should not be asked to.
-- **Phase 6.** The wording is the deliverable and it is a judgement call.
+- **Phase 4c** was held back until the blocking-or-resumable question was
+  answered, on the grounds that a worker will not settle it at 3am. It was
+  answered on 2026-09-08 (blocking), so it may now go in the run - as its own
+  step, with the decision stated in the brief rather than left to the worker.
+- **Phase 6**, but the reason has changed. It is no longer that the wording is an
+  unmade judgement - section F is agreed. It is the dependency: objective 1
+  classifies outcomes that phase 2 and phase 4c redefine, and phase 2 is not in
+  the run. Phase 6 goes in the run AFTER the one that lands phase 2.
 
 **What the run buys beyond the work itself.** It is the first ledger under the
 sonnet-default tiers, so one grep of its logs settles the `costBasis` 1.5x

@@ -115,7 +115,23 @@ NO_GIT_NOTICE = (
     " committed. Gates and workers otherwise run normally.")
 
 RERUN_OUTCOMES = {"STUCK", "FAIL", "INCONCLUSIVE", "SKIPPED", "REWORK FAILED",
-                  "REVERTED BY REVIEW", "HALTED", "NOT RUN", "OVER BUDGET"}
+                  "REVERTED BY REVIEW", "HALTED", "NOT RUN", "OVER BUDGET",
+                  "REFLECT INCONCLUSIVE", "BARREN"}
+
+# THE STEP, NOT THE ENVIRONMENT. The wall was called on this step, the probe then
+# answered, and the SAME step went barren to the threshold again: the account is
+# up and this step's workers are the only ones producing nothing, which is a local
+# cause - a model the CLI will not accept, an effort value it rejects, a budget
+# flag it cannot parse. Parking a second time would repeat that every
+# park_poll_min until morning, which is the loop this outcome exists to break.
+# Blocking (a person changes the step) and resumable (once they have), like STUCK.
+BARREN = "BARREN"
+BARREN_NOTE = (
+    "the account is answering - the probe replied - but this step's workers"
+    " returned nothing {n} times in a row, twice over. That is THIS STEP, not the"
+    " environment: most likely its `model`, `effort` or budget is one the CLI"
+    " rejects before it makes an API call. NOTHING WAS LEARNED ABOUT THE WORK."
+    " The run took the next step instead of parking again.")
 
 # What a step gets when the WALL tripped during it: the workers produced nothing
 # at all, so nothing about the code was learned and nothing about the code should
@@ -847,6 +863,8 @@ class Runner:
                                  if self.args.continuations is not None
                                  else self.run_cfg.get("continuations", 0))
         self.barren = 0            # consecutive worker invocations that produced nothing
+        self.last_barren = None    # the argv and log of the most recent of them
+        self.walled_once = set()   # step ids the wall was called on, then a probe answered
         self.parked_seconds = 0.0  # for the summary: how much of the night went to waiting
         self.probes = 0
         self.probe_cost = 0.0
@@ -1845,10 +1863,39 @@ class Runner:
         # of the ledger and nothing accumulates it separately.
         self.step_cost[step_id] = self.step_cost.get(step_id, 0.0) + cost
         self.count_barren(code, result, tag)
+        if self.is_barren(code, result):
+            # Kept for the breaker. When a step is finally recorded BARREN the
+            # morning needs the command that produced nothing and what it said,
+            # and by then that worker is several log files back.
+            self.last_barren = {"argv": " ".join(str(a) for a in argv),
+                                "code": code, "log": log_path}
         return code, elapsed, result
 
-    def count_barren(self, code, result, tag):
-        """Track consecutive invocations that produced NOTHING. See __init__.
+    def barren_evidence(self):
+        """The argv of the most recent barren worker, and what it printed.
+
+        Taken from the START of the worker output, not the end: a barren worker's
+        whole output IS the CLI's complaint - a rejected flag, an auth failure -
+        printed immediately and then nothing.
+        Put in the ledger note because that is what a person opens first, and
+        because the argv names the `--model` and `--effort` the step asked for,
+        which is what they are being invited to change.
+        """
+        if not self.last_barren:
+            return ""
+        argv = self.last_barren["argv"]
+        said = ""
+        text = read_text(self.last_barren["log"])
+        marker = "=== WORKER OUTPUT ==="
+        if marker in text:
+            said = " ".join(text.split(marker, 1)[1].split())[:400]
+        return (f" The last such worker exited {self.last_barren['code']} on"
+                f" `{argv}`" + (f" and said: {said}" if said else " and said nothing")
+                + f". Its log: {self.last_barren['log']}.")
+
+    @staticmethod
+    def is_barren(code, result):
+        """Did this invocation produce NOTHING AT ALL?
 
         Barren is a high bar on purpose, and each half of it matters. The worker
         must have FAILED - a worker that exits 0 having decided to do nothing is a
@@ -1862,9 +1909,19 @@ class Runner:
         Excluding 125 also stops three stalls in a row from being read as a usage
         wall: a stalled worker leaves no result event and exits non-zero, which is
         the exact shape of a barren one.
+
+        Extracted from count_barren because four places now ask this question -
+        the consecutive count, the reflect that never answered, the diagnostic
+        that would have two empty transcripts to read, and the breaker deciding
+        whether the cause is the step or the environment. Each of them growing
+        its own copy of the condition is how the definition drifts.
         """
         did_something = bool(result.get("total_cost_usd") or result.get("num_turns"))
-        if code == 0 or code in (124, 125) or did_something:
+        return not (code == 0 or code in (124, 125) or did_something)
+
+    def count_barren(self, code, result, tag):
+        """Track consecutive invocations that produced NOTHING. See __init__."""
+        if not self.is_barren(code, result):
             if self.barren:
                 self.log(f"{tag} the worker answered; the barren count goes back to 0")
             self.barren = 0
@@ -2336,7 +2393,11 @@ class Runner:
         note = ""
         workers = 0                # every worker spawned here, continuations included
         handover_words = handover_work = ""
+        barren_attempts = []       # one flag per finished attempt: did it produce nothing?
         for attempt in range(1, attempts + 1):
+            # An attempt is barren only if EVERY worker in it was - a continuation
+            # that got going means there is a transcript worth reading.
+            attempt_barren = True
             # Re-read the baseline PER ATTEMPT, not per step. A commit that landed
             # between attempts is then below the baseline and cannot be reset away.
             # This narrows the window; safe_reset closes what is left of it.
@@ -2383,6 +2444,8 @@ class Runner:
                         self.worker_argv("build", tier, budget=cap), brief, log_path,
                         timeout, f"[{step['id']}] {suffix}:", step["id"], "build")
                     workers += 1
+                if not self.is_barren(code, result):
+                    attempt_barren = False
                 if not self.args.dry_run:
                     self.log(f"[{step['id']}] {suffix}: worker exit {code} after"
                              f" {elapsed / 60:.1f} min"
@@ -2431,6 +2494,7 @@ class Runner:
                 self.log(f"[{step['id']}] {suffix}: cut off with work in the tree -"
                          f" continuing it with a fresh worker ({leg + 2} of"
                          f" {legs + 1} allowed)")
+            barren_attempts.append(attempt_barren)
             note = f"failed the gate: {failed}"
             # WHY the attempt failed, not just that a gate did. A worker the runner
             # had to kill never finished its work, so its gate failure says nothing
@@ -2477,7 +2541,19 @@ class Runner:
                         "minutes": round((time.time() - started) / 60, 1),
                         "legs": workers if workers > 1 else None, "note": note}
             if attempt == 2 and attempts > 2 and not self.args.dry_run:
-                self.run_diagnostic(step, step_dir, attempt_base)
+                if barren_attempts and all(barren_attempts):
+                    # NOTHING TO READ. The diagnostic exists to read two
+                    # transcripts and say what went wrong; when both workers
+                    # returned nothing, both transcripts are the CLI's own error
+                    # message, and an opus worker is being paid to summarise it.
+                    # Worse, it is spawned into whatever stopped the first two,
+                    # so it is usually the third barren worker of the cascade -
+                    # which brings the wall on faster while costing a step.
+                    self.log(f"[{step['id']}] both attempts returned nothing;"
+                             " SKIPPING the diagnostic - there is no transcript to"
+                             " read. Attempt 3 gets no remediation plan.")
+                else:
+                    self.run_diagnostic(step, step_dir, attempt_base)
         if self.args.dry_run:
             # Not STUCK. Nothing was attempted, so nothing got stuck: the brief
             # composed, the gates ran, and they said what they say against the tree
@@ -2621,6 +2697,25 @@ class Runner:
             step_dir / "reflect.log",
             60 * float(step.get("timeout_min", self.run_cfg.get("reflect_timeout_min", 30))),
             f"[{step['id']}]", step["id"], "reflect")
+        if self.is_barren(code, result):
+            # A REFLECT THAT NEVER RAN IS NOT A REFLECT THAT FOUND NOTHING. The
+            # validation below asks one question - did the plan change? - and a
+            # worker that died before starting leaves it unchanged, so without
+            # this the outcome is `REFLECT NO CHANGE`: benign for the exit code,
+            # complete on a resume, and in the morning it reads as *the plan was
+            # considered and found sound*. That is the worst shape a failure can
+            # take, and it happened for real on 2026-09-07. The plan is restored
+            # from the backup first, which is a no-op unless the worker got far
+            # enough to touch it.
+            shutil.copyfile(backup, self.spec_path)
+            self.safe_reset(before, "reflect returned nothing", f"{step['id']}-barren", step_dir)
+            note = ("the reflect worker returned NOTHING: exit"
+                    f" {code}, no result event, and the plan is untouched. The"
+                    " plan was NOT considered - this is not `no change`."
+                    + self.barren_evidence())
+            self.log(f"[{step['id']}] REFLECT INCONCLUSIVE - {note}")
+            return {"outcome": "REFLECT INCONCLUSIVE", "note": note,
+                    "minutes": round(elapsed / 60, 1)}
         verdict = result.get("structured_output") or {}
         rationale = (verdict.get("rationale") or "")[:400] if isinstance(verdict, dict) else ""
         # Validate what it did to the plan.
@@ -2798,6 +2893,14 @@ class Runner:
                       " not failed, and NOTHING in this run is a finding about its"
                       " code. Relaunch when the account is back and it is picked up"
                       " where it stopped.", ""]
+        if any((s.get("done") or {}).get("outcome") == BARREN for s in self.spec["steps"]):
+            lines += [f"> **A step below is `{BARREN}`.** Its workers produced nothing"
+                      " while the account was proven up by a probe, twice over, so"
+                      " the cause is local to that step - check its `model`,"
+                      " `effort` and `budget_usd` against what the CLI accepts; the"
+                      " note carries the exact command and what it said. The rest of"
+                      " the plan was run rather than the night being spent parking"
+                      " on it.", ""]
         if self.parked_seconds or self.probes:
             # Said out loud, because otherwise every per-hour figure in this file
             # lies about what the run cost: the hours are wall-clock and some of
@@ -2996,6 +3099,27 @@ class Runner:
                 outcome = self.run_reflect(step)
             else:
                 outcome = self.run_gate_step(step)
+            if self.barren >= self.wall_threshold and step["id"] in self.walled_once:
+                # THE STEP, NOT THE ENVIRONMENT. The wall was called on this step
+                # before, the probe then answered, and here it is again: the
+                # account is up and this step alone produces nothing. Parking
+                # again would ask the same question of the same probe every
+                # park_poll_min until morning while the step is picked first each
+                # time - the loop F2 described, which spends a night on one
+                # mistyped `model` or `effort`. Two facts the runner already
+                # holds, compared; no model in the loop.
+                note = BARREN_NOTE.format(n=self.barren) + self.barren_evidence()
+                self.log(f"[{step['id']}] {BARREN} - {note}")
+                self.record(step, BARREN, note=note, minutes=outcome.get("minutes"),
+                            attempts=outcome.get("attempts"))
+                session[step["id"]] = BARREN
+                index += 1
+                # The count goes back to zero deliberately: it is a count of
+                # CONSECUTIVE barren workers as evidence about the environment,
+                # and this one has just been explained by the step instead. Left
+                # standing it would call the wall on the next step's first worker.
+                self.barren = 0
+                continue
             if self.barren >= self.wall_threshold:
                 # THE OUTCOME IS DISCARDED, and that is the point. This step's
                 # workers returned nothing, so `STUCK` here would be a finding
@@ -3020,6 +3144,10 @@ class Runner:
                 # really attempted, so it goes back in the queue rather than being
                 # skipped as already-run this session.
                 self._ran_this_session.discard(step["id"])
+                # Remembered so that a SECOND wall on this same step is read as
+                # the step rather than the environment: the probe has just proved
+                # the account answers.
+                self.walled_once.add(step["id"])
                 continue
             if step["kind"] != "gate":
                 # RECORDED BY THE RUNNER, because the commit cannot be trusted for
@@ -3122,9 +3250,11 @@ run:
                                  # collects every test file twice
   preamble: <path to a brief preamble file; {CHUNK} is replaced by the step id>
   decisions_file: overnight/DECISIONS-PENDING.md
-  defaults:                      # tier per kind; OM build, OH review/reflect/diagnostic
+  defaults:                      # tier per kind; SM build, OH review/reflect/diagnostic
     build: {model: sonnet, effort: medium}
-  gates:                         # universal, appended to every build step's own
+  gates:                         # universal, appended to every build step's own,
+                                 # so CHEAP AND LOCAL only. The full suite goes in
+                                 # a `kind: gate` checkpoint, never here
     - {name: ..., cmd: <shell command, exit 0>}
     - {clean_tree: true}
 steps:
@@ -3176,8 +3306,9 @@ quoting all survive, and an edit that would change another step is refused.
       added: [..]  removed: [..] # a reflect that changed the plan
 
 A step is COMPLETE iff its `done.outcome` is outside STUCK, HALTED, FAIL,
-INCONCLUSIVE, SKIPPED, REWORK FAILED, REVERTED BY REVIEW, NOT RUN and
-OVER BUDGET; anything else is re-run on resume. `--reset-state` strips every
+INCONCLUSIVE, SKIPPED, REWORK FAILED, REVERTED BY REVIEW, NOT RUN, OVER BUDGET,
+REFLECT INCONCLUSIVE and BARREN; anything else is re-run on resume.
+`--reset-state` strips every
 `done:` and commits that.
 `--mode` reads the plan alone and prints BLOCKED, PLAN, RUN or REPLACE?.
 """
@@ -3213,7 +3344,9 @@ def find_runs(where):
 # scratch branch, so re-running the step would do it a second time. Only a person
 # can say how it lands. OVER BUDGET is in both, like STUCK: a resume will re-run
 # it, but not until a person has changed something about the step or the cap.
-BLOCKING_OUTCOMES = ("STUCK", "HALTED", "NEEDS MERGE", OVER_BUDGET)
+# BARREN is in both for the same reason - the step's own tier or budget is what
+# needs changing, and a resume that came round again without that would loop.
+BLOCKING_OUTCOMES = ("STUCK", "HALTED", "NEEDS MERGE", OVER_BUDGET, BARREN)
 
 
 def print_mode(where):
@@ -3246,8 +3379,10 @@ def print_mode(where):
         print("BLOCKED")
         print(f"reason: {len(blocked)} step(s) need a person before this plan can go"
               " further - a stuck step has already had every retry the runner has,"
-              " a halted step means somebody else committed to the branch, and an"
-              " over-budget step wants a smaller brief or a bigger cap.")
+              " a halted step means somebody else committed to the branch, an"
+              " over-budget step wants a smaller brief or a bigger cap, a"
+              " needs-merge step left its work on a scratch branch, and a barren"
+              " step's workers would not start at all while the account was up.")
         print(f"spec: {spec_path}")
         for step in blocked:
             done = step["done"]
@@ -3321,7 +3456,8 @@ def print_progress(where, which=""):
     for sid, entry in ran:
         flag = " <-- NEEDS YOU" if entry["outcome"] in (
             "STUCK", "HALTED", "FAIL", "INCONCLUSIVE", "REVIEW FAIL",
-            "REVIEW REWORK FAILED", "REFLECT REVERTED", OVER_BUDGET) else ""
+            "REVIEW REWORK FAILED", "REFLECT REVERTED", "REFLECT INCONCLUSIVE",
+            OVER_BUDGET, BARREN) else ""
         print(f"  {sid:<30} {entry['outcome']:<22} {entry.get('minutes', 0):>5.0f} min"
               f"  {str(entry.get('note', ''))[:70]}{flag}")
     pending = [s["id"] for s in steps if is_resumable(s)]

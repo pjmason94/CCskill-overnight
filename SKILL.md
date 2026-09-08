@@ -25,7 +25,7 @@ It prints one word on the first line, then the reason and the relevant step ids:
 
 | it prints | what it means | do this |
 |---|---|---|
-| **BLOCKED** | a step is STUCK, HALTED or OVER BUDGET | **stop.** Load `references/blocked.md` |
+| **BLOCKED** | a step is STUCK, HALTED, OVER BUDGET, NEEDS MERGE or BARREN | **stop.** Load `references/blocked.md` |
 | **PLAN** | there is no plan file | load `references/planning.md` |
 | **RUN** | the plan has steps still to run | load `references/launching.md` |
 | **REPLACE?** | every step completed | ask whether to replace the plan; if yes, `references/planning.md` |
@@ -36,8 +36,10 @@ It prints one word on the first line, then the reason and the relevant step ids:
 **BLOCKED wins over everything.** It is checked before the others and it is a
 hard stop, not a menu: a STUCK step has already had every retry the runner has,
 a HALTED step means somebody else committed to the branch mid-step, an OVER
-BUDGET step wants a smaller brief or a bigger cap, and none of the three is a
-thing this skill can resolve. Do not offer to resume, do not offer to
+BUDGET step wants a smaller brief or a bigger cap, a NEEDS MERGE step left its
+work on a scratch branch that the tree does not have, a BARREN step's workers
+would not start at all while the account was proven up, and none of the five is
+a thing this skill can resolve. Do not offer to resume, do not offer to
 re-plan, do not proceed to another mode. Report it and hand it back.
 
 Two modes are asked for directly rather than inferred, and skip `--mode`:
@@ -108,13 +110,15 @@ source of truth. `--check` reports, `--force` replaces, `--uninstall` removes.
 | file | what |
 |---|---|
 | `overnight.py` | the runner. Report and exit, launching nothing: `--list`, `--print-brief ID`, `--format`, `--progress`, `--mode`, `--reset-state`. `--dry-run` spawns no worker and writes no outcome, but it does execute each gate command. Launch for real: bare, or with `--from ID`, `--only A,B`, `--rerun` |
-| `selftest.py` | every path, against `fake_worker.py`, for no tokens. 7-20 min depending on the machine, so allow for it. `--list`, `--only 13,17`, `--from 17` run part of it - a partial run says `SELFTEST PARTIAL OK` and never gates a launch |
+| `selftest.py` | every path, against `fake_worker.py`, for no tokens. 7-19 min depending on the machine, so allow for it. `--list`, `--only 13,17`, `--from 17` run part of it - a partial run says `SELFTEST PARTIAL OK` and never gates a launch |
 | `install.py` | link this checkout in as the skill |
-| `references/blocked.md` | a STUCK or HALTED step: the report, and the hand back |
+| `references/blocked.md` | a STUCK, HALTED, OVER BUDGET, NEEDS MERGE or BARREN step: the report, and the hand back |
 | `references/planning.md` | stage 1: read, interview, write the spec and briefs |
 | `references/launching.md` | stage 2: self-test, dry run, commit, launch, morning |
 | `references/progress.md` | read a run in flight or a finished one |
 | `references/spec-format.md` | the steps file, gate forms, step kinds, tiers |
 | `examples/` | a complete fictional run package that works against the fake worker |
+| `tools/tally.py` | where a worker's or an interactive session's tokens went, from its log |
+| `tools/progress.py` | one line per project, for a 3am "how is it going" - read-only |
 | `README.md` | the full manual |
 | `docs/ROADMAP.md` | what is not built yet |

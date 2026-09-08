@@ -42,8 +42,12 @@ run:
     review:     {model: opus,   effort: high}
     reflect:    {model: opus,   effort: high}
     diagnostic: {model: opus,   effort: high}
-  gates:                         # universal; appended to EVERY build step
-    - {name: full suite, cmd: python -m pytest -q}
+  gates:                         # universal; appended to EVERY build step, so
+                                 # keep them CHEAP AND LOCAL. The full suite is
+                                 # NEVER here and is never a per-step gate: it
+                                 # goes in a `kind: gate` checkpoint every three
+                                 # to five builds (see `checkpoint-1` below)
+    - {name: lint, cmd: python -m ruff check .}
     - {clean_tree: true}
 
 steps:
@@ -78,6 +82,12 @@ steps:
     kind: gate                   # commands only, no worker
     gates:
       - {file: out/measurement.json}
+
+  - id: checkpoint-1
+    kind: gate                   # the full suite belongs HERE, not on a build
+    gates:                       # step: no worker, no tokens, and a failure is
+      - {cmd: python -m pytest -q}    # attributable to the few steps since the
+                                 # last checkpoint that passed
 ```
 
 ## Gate forms
@@ -103,7 +113,8 @@ its own work. Up to `attempts` tries; a failed gate resets to the attempt's
 baseline. After the second failure a **diagnostic** worker reads a compact
 transcript of both attempts - the assistant's words and every tool error, tens of
 KB instead of megabytes - and writes `remediation.md`, which the third attempt
-ingests. Still failing: STUCK, and the run moves on. The one failure that is not
+ingests; it is skipped when both attempts returned nothing at all, there being no
+transcript to read. Still failing: STUCK, and the run moves on. The one failure that is not
 retried is a worker cut off by its budget cap - if `run.continuations` allows, the
 work is handed to a fresh worker with the tree as it stands (which spends the next
 cap on the part that is not done, rather than on repeating the part that is);
@@ -176,11 +187,16 @@ re-dumps the file, because that would destroy comments, key order and quoting.
 
 A step is complete iff it carries `done:` with an outcome outside `STUCK`,
 `HALTED`, `FAIL`, `INCONCLUSIVE`, `SKIPPED`, `REWORK FAILED`,
-`REVERTED BY REVIEW`, `NOT RUN` and `OVER BUDGET`. A relaunch skips what completed and re-runs the rest.
+`REVERTED BY REVIEW`, `NOT RUN`, `OVER BUDGET`, `REFLECT INCONCLUSIVE` and
+`BARREN`. A relaunch skips what completed and re-runs the rest.
 `--rerun` forces everything; `--reset-state` strips every `done:` from the file,
 commits that and exits without launching - the flag has outlived the file it was
 named for.
 
-`--mode` prints what to do next from the plan alone: `BLOCKED` (a STUCK, HALTED
-or OVER BUDGET step needs a person; exits 3), `PLAN` (no plan file), `RUN` (steps still
-to run) or `REPLACE?` (everything completed).
+`NEEDS MERGE` is the exception to both halves: it is **complete** for the resume
+(the work exists on its scratch branch and re-running the step would do it twice)
+and it is **blocking**, so a person lands the branch before the run goes on.
+
+`--mode` prints what to do next from the plan alone: `BLOCKED` (a STUCK, HALTED,
+OVER BUDGET, NEEDS MERGE or BARREN step needs a person; exits 3), `PLAN` (no plan file),
+`RUN` (steps still to run) or `REPLACE?` (everything completed).

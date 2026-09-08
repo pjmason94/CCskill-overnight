@@ -172,6 +172,7 @@ Everything an overnight run needs, and everything it writes, lives under
         steps.yaml              the plan - committed
         briefs/
           _preamble.md          rules every worker gets - committed
+          _reflect.md           optional guidance for reflect steps - committed
           <step-id>.md          one brief per build step - committed
         DECISIONS-PENDING.md    questions the workers raise - gitignored
         runs/<run-name>/        everything the run writes - gitignored
@@ -241,8 +242,10 @@ silently filtered is worse than no seed, because you believe your document is
 the plan.
 
 **Morning.** Read `overnight/runs/<name>/SUMMARY.md`, then every `verdict.json`
-and `remediation.md`, then `DECISIONS-PENDING.md`, and then the commits
-themselves. A gate is a floor, not a standard.
+and `remediation.md`, then `DECISIONS-PENDING.md`, then any
+`discarded-commits.md` - work a failed gate reset away, each commit still
+recoverable by its rescue tag - and then the commits themselves. A gate is a
+floor, not a standard.
 
 ## 4. How a run works
 
@@ -289,8 +292,8 @@ it resolved to, and so does the `STOP:` line when the clock ends the run:
 
 **A step that will not fit is skipped, not started.** Before each step the runner
 compares its `expected_min` against the time left. A build step that cannot
-finish records `NOT RUN` — naming both figures, so it reads as a clock decision
-and not as a usage-wall casualty — and the runner takes the next step that does
+finish records `NOT RUN` - naming both figures, so it reads as a clock decision
+and not as a usage-wall casualty - and the runner takes the next step that does
 fit. `NOT RUN` resumes cleanly and wakes nobody. When nothing left fits, the run
 stops and says the rest are pending, not failed.
 
@@ -299,8 +302,8 @@ passing build unreviewed until somebody relaunches costs more than running a few
 minutes over.
 
 **Skipping ahead assumes the passed-over step was not a prerequisite, and nothing
-verifies that.** The plan carries no record of what feeds what. The alternative —
-stopping the run — throws away the rest of the night over a hazard that can
+verifies that.** The plan carries no record of what feeds what. The alternative -
+stopping the run - throws away the rest of the night over a hazard that can
 instead be stated plainly, so the runner states it: once in the log at the moment
 it is taken, and again at the top of `SUMMARY.md`, naming which step was skipped
 and which ran in its place. Check it before trusting what ran.
@@ -324,7 +327,9 @@ ones - from the repository root.
   writes `remediation.md`: what went wrong on each, whether they share a root
   cause, what the third attempt must do differently, what it must not retry, and
   the smallest useful subset if the step as briefed is not achievable. The third
-  attempt's brief carries that plan.
+  attempt's brief carries that plan. It is **skipped when both attempts returned
+  nothing at all**: there is no transcript to read, only the CLI's error message
+  twice over (see the wall, below).
 - **Still failing after `attempts` tries:** STUCK. The run moves on. A STUCK step
   is re-run on the next launch (section 9, resume).
 - **The worker is killed** if it exceeds `timeout_min` (default
@@ -414,6 +419,13 @@ file touched outside the plan and its briefs. A valid change is committed with t
 reflect's rationale as the message. A reflect that changes nothing is recorded as
 such.
 
+**A reflect whose worker never answered is `REFLECT INCONCLUSIVE`, not
+`REFLECT NO CHANGE`.** Validation asks one question - did the plan change? - and
+a worker that died before starting leaves it unchanged, so the two were once
+indistinguishable in the ledger. They are opposite facts: one is a judgement that
+the plan is sound, the other is a judgement nobody made. `REFLECT INCONCLUSIVE`
+is not benign for the exit code and is re-run on the next launch.
+
 ### Gate steps
 
 Commands only, no worker. For a long measurement whose result is a number in a
@@ -451,6 +463,26 @@ Then, per `run.on_wall`:
   and a hung run must not look alike from outside.
 - **`stop`.** The run ends there and every remaining step is left pending. Use it
   when nobody will be up to benefit from a resume.
+
+**The probe answers what the wall cannot: is it the account, or is it this
+step?** A worker whose `model`, `effort` or budget flag the CLI rejects dies with
+no result event before it makes an API call - the exact shape of a usage wall. So
+the runner remembers which steps the wall was called on, and if a step goes
+barren to the threshold **again after a probe has answered**, the account is
+demonstrably up and this step alone is producing nothing. It is recorded
+**`BARREN`**, with the failing command and what it printed in the note, and the
+run takes the next step rather than parking on it. Without that a single mistyped
+`effort` cost the whole night: park, probe, re-run the same step, park again,
+every `park_poll_min` until morning, with the rest of the plan never started.
+`BARREN` is blocking - a person changes the step's tier or cap - and resumable
+once they have.
+
+**Two barren attempts skip the diagnostic.** The diagnostic exists to read the
+transcripts of attempts 1 and 2; when both workers returned nothing, both
+transcripts are the CLI's own error message, and an opus worker would be paid to
+summarise it - into whatever stopped the first two, so it is usually the third
+barren worker of the cascade and brings the wall on faster. The third attempt
+simply gets no remediation plan.
 
 **Parked time does not extend the stop time.** The stop time is a promise about when
 you can look, not a quantity of compute you are owed, so a long wall eats into the
@@ -641,7 +673,28 @@ where the run directory is and that the tree is off limits.
 | `on_wall` | `park` | what to do when workers stop answering entirely: `park` waits and probes until the account is back, `stop` ends the run. See section 4 |
 | `wall_threshold` | 3 | consecutive workers returning NOTHING before that happens |
 | `park_poll_min` | 30 | minutes between probes while parked |
-| `gates` | none | universal gates, appended to every build step's own |
+| `gates` | none | universal gates, appended to every build step's own. Keep them cheap and local - every build step of the night pays each one. The full suite goes in a `kind: gate` checkpoint |
+| `isolation` | `worktree` | `worktree` gives each build step its own git worktree on a scratch branch, integrated once its gates pass; `in-place` puts the workers in your tree. See section 6 |
+| `worktree_link` | none | a list of paths git does not carry - `.venv`, `node_modules`, a local `.env` - linked into every worktree so gates that need them still pass |
+| `worktree_root` | `<repo>.overnight-worktrees/` beside the repository | where the worktrees are made. A sibling by default, and deliberately never inside the repository |
+
+**The three worktree keys.** `isolation` is the switch, and the other two exist
+because a fresh checkout is not your working tree. Preflight makes a worktree and
+runs the universal gates in it: if they pass in your tree and fail in a fresh
+one, something the gates need is not in git, and the run refuses to start rather
+than discovering it at 03:00. The first answer to that is usually to fix the
+suite - the difference it just found is often a real defect your working copy was
+hiding. The second is `worktree_link`, naming the paths to link in:
+
+    run:
+      isolation: worktree
+      worktree_link: [.venv, node_modules]
+
+`isolation: in-place` is the fallback and not the first answer: it puts the
+workers back in your tree, where a file you create mid-step fails their gates and
+costs a step. `worktree_root` only needs setting when the default sibling
+directory is awkward - a path length limit, a different filesystem - and it must
+still be outside the repository, for the reason section 6 gives.
 
 ### A step
 
@@ -722,8 +775,10 @@ one cache namespace rather than two.
 ## 8. Briefs
 
 A brief is a markdown file the worker reads once. The composed brief a worker
-receives is: the preamble, then `# Your step: <id> - <title>`, then the brief
-file, then the gates rendered as a list, then (attempt 3) the remediation plan,
+receives is: the preamble, then `# Your step: <id> - <title>`, then the
+tool-usage note (section 12: how to read a codebase without filling a context
+window, the same note on every worker of every project), then the brief file,
+then the gates rendered as a list, then (attempt 3) the remediation plan,
 then (rework) the review's findings, then `This is attempt N.` See exactly what
 will be sent with `--print-brief <id>`.
 
@@ -734,7 +789,7 @@ question or a finding as it is learned (the decisions file), and what to say in
 the commit message (what was NOT built, and why). `{CHUNK}` is replaced by the
 step id.
 
-**A good brief** (see `examples/briefs/first-thing.md`):
+**A good brief** (see `examples/briefs/parse-durations.md`):
 
 - names the two or three files to read first and says what is wrong with them
   today - a brief that describes the goal without the current state makes the
@@ -767,6 +822,8 @@ step id.
 | `--list` | print every step, its kind, its recorded outcome, its title; exit |
 | `--print-brief <id>` | print the composed brief a build or reflect worker would receive; exit |
 | `--format` | print the steps file reference form; exit |
+| `--progress [dir]` | digest a run in flight, or the last one, and exit; defaults to the current directory. No `--spec` needed |
+| `--run <name>` | with `--progress`, which run directory to read when a project has more than one. Default: the most recently written |
 | `--dry-run` | no workers. Preflight, then each step's gates as they stand. Proves the plan parses and the gates run. Writes no `done:`, commits nothing, logs to `runs/<name>/dry-run/`; every named gate is expected to fail |
 | `--only a,b,c` | run only these steps, in plan order. Naming a **review** step can cost more than it looks: a `rework` verdict spawns a full build worker on top of the reviewed commit and re-runs its gates, and that rework is not a step you named. Budget a review at review + rework, about 1.5x the build it reviews |
 | `--from <id>` | run from this step to the end |
@@ -779,8 +836,11 @@ block on each step, committed as they happen. Relaunching with the same spec
 skips every step that completed: PASS, a review that ran, a reflect that ran,
 anything SKIPPED for a reason that will not change. It re-runs a step that did
 not complete: STUCK, FAIL, HALTED, INCONCLUSIVE, REWORK FAILED, REVERTED BY
-REVIEW, NOT RUN, OVER BUDGET, and a review SKIPPED because its subject had not
-passed. `--rerun`
+REVIEW, NOT RUN, OVER BUDGET, REFLECT INCONCLUSIVE, BARREN, and a review SKIPPED
+because its subject had not passed. `NEEDS MERGE` is the one outcome that is **blocking and yet complete**:
+its work exists on a scratch branch, so re-running the step would do it a second
+time. A person lands the branch, and the relaunch carries on from the next step.
+`--rerun`
 re-runs passed steps too; `--reset-state` strips every `done:` from the plan,
 commits that, and **exits**. It is an exclusive action, like `--list` and
 `--print-brief`: forgetting a night's outcomes is a decision of its own, and
@@ -792,7 +852,7 @@ starting the plan again is the next command, typed deliberately. (Until
 
 | it prints | when | exit |
 |---|---|---|
-| `BLOCKED` | a step is STUCK, HALTED, OVER BUDGET or NEEDS MERGE - it needs a person | 3 |
+| `BLOCKED` | a step is STUCK, HALTED, OVER BUDGET, NEEDS MERGE or BARREN - it needs a person | 3 |
 | `PLAN` | there is no plan file | 0 |
 | `RUN` | steps are still to run | 0 |
 | `REPLACE?` | every step completed | 0 |
@@ -802,7 +862,8 @@ BLOCKED is tested first and deliberately overrides the rest.
 **Exit code.** 0 when every recorded outcome is benign (PASS, REVIEW PASS, REVIEW
 REWORK PASS, REFLECT NO CHANGE, REFLECT CHANGED, SKIPPED); 1 when any is not
 (STUCK, HALTED, FAIL, REVIEW FAIL, REVIEW REWORK FAILED, REFLECT REVERTED,
-INCONCLUSIVE, NOT RUN, OVER BUDGET); 2 when preflight refused to start. Unknown step ids and a missing
+REFLECT INCONCLUSIVE, INCONCLUSIVE, NOT RUN, OVER BUDGET, BARREN); 2 when
+preflight refused to start. Unknown step ids and a missing
 `claude` exit 1 with a message before anything runs.
 
 ## 10. Outputs
@@ -906,10 +967,10 @@ the file immediately before each write and touches only the block it is
 recording. Editing a step that already carries `done:` is not defended against.
 
 Outcomes: `PASS`, `STUCK`, `HALTED`, `OVER BUDGET`, `NOT RUN`, `NEEDS MERGE`,
-`FAIL` (a gate step), `SKIPPED`, `INCONCLUSIVE`, `REVIEW PASS`,
+`BARREN`, `FAIL` (a gate step), `SKIPPED`, `INCONCLUSIVE`, `REVIEW PASS`,
 `REVIEW REWORK PASS`, `REVIEW REWORK FAILED`, `REVIEW FAIL`,
 `REVERTED BY REVIEW` (on the reviewed step), `REFLECT CHANGED`,
-`REFLECT NO CHANGE`, `REFLECT REVERTED`.
+`REFLECT NO CHANGE`, `REFLECT INCONCLUSIVE`, `REFLECT REVERTED`.
 
 ### `verdict.json`
 
@@ -991,6 +1052,15 @@ worker is doing, how far through the brief it is, or whether it is going to pass
 The design accepts this: a worker's progress is not measurable from outside
 without reading its stream, and reading its stream from an interactive session
 costs the context that section 6 warns about.
+
+**Where the percentage lives instead.** A long run is expected to say how far
+through it is, and this one can - it knows its steps and each step's
+`expected_min`. It just does not say it once a minute, because the answer only
+changes when a step ends. Ask for it when you want it: `--progress` digests the
+run in flight - what each step did, its minutes, what is still to run and what is
+in flight now - `tools/progress.py` gives one line per project for a 3am glance,
+and `SUMMARY.md` carries the whole ledger, each actual against its estimate, at
+the end. The per-minute line in `run.log` is deliberately the cheap one.
 
 **When you want more.** The attempt log is the worker's full `stream-json`
 output, one JSON event per line, with the brief at the top and the gate output at
@@ -1271,8 +1341,10 @@ step faces the normal gates and review like any other.
   (`--list`, `--progress`, `--print-brief`) is not blocked by it. A lock written
   on another machine cannot be checked for liveness, so it is obeyed until
   somebody deletes it.
-- **Progress is liveness, not percentage.** The heartbeat reports that a worker
-  is alive and how much it has written, nothing finer (section 11).
+- **The per-minute heartbeat is liveness, not percentage.** It reports that a
+  worker is alive and how much it has written, nothing finer. The percentage
+  exists, but you ask for it: `--progress`, `tools/progress.py`, `SUMMARY.md`
+  (section 11).
 - **Uncommitted edits to tracked files are unprotected** from a reset (section
   5). Commits and untracked files are protected; a modified tracked file is not.
 - **A gate is only as honest as the command.** A test that cannot fail, a linter
@@ -1362,7 +1434,7 @@ repository and prints its path, and the run.log tail is printed on failure.
 | file | what |
 |---|---|
 | `overnight.py` | the runner, one file; `python overnight.py --help` |
-| `selftest.py` | every path, against the fake worker; 7-20 min depending on the machine. `--list`, `--only`, `--from` run part of it |
+| `selftest.py` | every path, against the fake worker; 7-19 min depending on the machine. `--list`, `--only`, `--from` run part of it |
 | `fake_worker.py` | a scripted stand-in for `claude -p`; the behaviours are listed at its top |
 | `install.py` | link this checkout in as the skill; `--check`, `--force`, `--copy`, `--uninstall` |
 | `SKILL.md` | what Claude Code reads for `/overnight`: a short router over the four modes |
