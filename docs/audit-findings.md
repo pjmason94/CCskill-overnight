@@ -399,3 +399,199 @@ the same commit, full suite before it.
 Groups 1, 3 and 6 are safe to do in one sitting. Group 2 and group 4 change
 what a resume does and should each be read as a diff before the suite runs.
 Group 7 waits on Paul's yes to section F as written or amended.
+
+---
+
+# The build plan - ordering, and whether to run it overnight
+
+Added 2026-09-08 at OH, reviewing the seven groups above rather than restating
+them. Four of them change on a second reading, and the fourth change reorders
+the plan more than any other observation in this document.
+
+## Amendments to the fix set above
+
+**A1. Drop the `## Feeds` preflight check entirely.** It was proposed as a
+warning, and a warning printed into `run.log` at 23:00 is read by nobody - which
+is the whole argument axis C makes against advisory rules. So it must either
+refuse or not exist. Refusing a night because a brief states its downstream
+contract without that exact heading is far too strong, and it would train
+planners to paste a heading rather than write a contract. It stays advisory in
+`planning.md` deliberately, and that is the honest answer rather than a
+half-measure.
+
+**A2. `timeout_min <= expected_min` refuses; it does not warn.** Same test,
+opposite conclusion. A timeout at or below the step's own estimate is
+arithmetically nonsense: a step that runs to the length its planner predicted is
+guaranteed to be killed mid-work. There is no legitimate spec that does this, so
+it is refused at load, collected into the message `expected_min` already builds.
+
+**A3. The `run:` key table comes out of the documents group.** Three keys missing
+from a table `spec-format.md:4` calls exhaustive is not a wording slip when the
+three are `isolation`, `worktree_link` and `worktree_root` - the controls for the
+defence 1.0.3 made the default. The fresh-worktree refusal message
+(`overnight.py:2904`) tells the user to "list the paths under
+`run.worktree_link:`", and the manual has no such entry. It needs a row each and
+a paragraph, not a one-line correction.
+
+**A4. G-4, the diagnostic skip and F2b are one piece, not three.** All three ask
+the same question - *did this worker return nothing?* - which `count_barren`
+already answers privately at `overnight.py:1866`. Fixed as separate steps they
+each grow a copy of that condition and the third refactors the first two. This is
+the largest single rework hazard in the set, and it is why the ordering below
+does not follow the group numbering.
+
+## The ordering
+
+Dependency and rework first, impact second within each phase.
+
+### Phase 1 - stop the live harm. SL/SM. No code, no test, no prerequisite.
+
+First because it depends on nothing and because it is the only finding
+**currently costing nights**. `references/spec-format.md:45` and
+`examples/steps.example.yaml:37` still show the full suite as a universal gate,
+annotated "appended to EVERY build step" - 1.0.3 corrected `planning.md` and the
+README and left the two files a planner actually opens, one for the key format
+and one to copy the shape from.
+
+- **1a.** Both files' `run.gates` become cheap and local; the example grows a
+  `kind: gate` checkpoint carrying the suite, which is the shape the README now
+  recommends anyway.
+- **1b.** `NEEDS MERGE` as the fourth BLOCKED cause in `SKILL.md:28` and
+  `spec-format.md:184`, with a recovery section in `references/blocked.md`.
+- **1c.** A3, the `run:` key table.
+- **1d.** The severity-3 wording that describes behaviour nothing later changes.
+  **Hold back** the resume-rule wording at `README.md:761` - it moves in phase 4.
+
+No runner change, so no self-test change; say that in the commit message, per the
+project rule.
+
+### Phase 2 - the barren family, as one coherent piece. OM.
+
+Second because of A4: this is where separate steps cost the most, and it is the
+highest-value code change in the set.
+
+- **2a.** Extract the barren predicate out of `count_barren`. A pure refactor,
+  and the suite passing unchanged is the proof that it is one.
+- **2b.** G-4: a reflect whose worker returned nothing becomes
+  `REFLECT INCONCLUSIVE` - into `RERUN_OUTCOMES`, out of the benign set at 3068.
+  Fixture first: today that scenario yields `REFLECT NO CHANGE` and exit 0.
+- **2c.** Skip the diagnostic when both attempts were barren (`overnight.py:2479`).
+  There is nothing in those transcripts to read, and it is the third barren
+  worker of the cascade.
+- **2d.** F2b: when the probe answers and the same step goes barren to threshold
+  again, it is the step, not the environment. Record blocking with the argv and
+  the stderr tail; take the next step instead of parking again.
+
+**Ordering constraint inside the phase:** 2d's fixture must induce barrenness
+through the fake-worker scenario, never through a bad `effort` in the spec, or
+phase 3 makes that fixture unbuildable.
+
+Gates: `--only 15` and `--only 1` while working; the full suite closes the phase.
+
+### Phase 3 - refuse it at load or at preflight. SM.
+
+Cheap once the shape is copied from `expected_min`, and after 2d for the reason
+just given.
+
+- **3a.** F1: stat every still-to-run build step's brief and `run.preamble` at
+  preflight, collect the offenders into one message, exit 2 before the lock.
+  **Verified safe against the current suite:** `scaffold` (`selftest.py:340-353`)
+  writes `_preamble.md` and s1-s3 into every fixture repository, so no existing
+  fixture depends on a missing brief.
+- **3b.** F2a: `effort` in {low, medium, high}; `run.budget_usd_per_step` through
+  the positive-number check its per-step twin already gets.
+- **3c.** A2, the timeout refusal.
+
+Gate: `--only 25`, which already owns load-time refusals.
+
+### Phase 4 - the plumbing, then the contract. SM, SM, OM.
+
+- **4a.** F3: `budget=self.budget_for(step)` at the review, reflect and
+  diagnostic call sites. Asserted on the argv line of `review.log`, which
+  section 1 already reads at `selftest.py:494`.
+- **4b.** F4: `self.all_gates(step)` in `run_gate_step`, with the `kind: gate`
+  fixture (T3) written first and shown to fail.
+- **4c.** F5: `REVIEW REWORK FAILED` into `BLOCKING_OUTCOMES`, the unreachable
+  bare `REWORK FAILED` resolved, `blocked.md` and the two resume-rule statements
+  corrected in the same commit. **This is the one item in the plan that is
+  blocked on a decision** - blocking, or resumable as documented.
+
+### Phase 5 - the remaining coverage. SM. Changes no behaviour; nothing depends on it.
+
+**T1 first within the phase**, because it guards the only finding that costs
+money rather than time: one line in `fake_worker.py` exiting non-zero if any
+`STRIP_ENV` name survives into the child, and one check. Then T2
+(`on_fail: record` and `revert`), T4 (`cmd_empty`, `fresh_shell`), T6
+(`--rerun`), and last the three proxy upgrades.
+
+### Phase 6 - the objective. FH for the wording, SM for the lines. Genuinely last.
+
+Not merely by preference. Objective 1 partitions the outcome vocabulary into
+landed, judgement and waste - and phases 2 and 4 **change that vocabulary**:
+`REFLECT INCONCLUSIVE` arrives, `REVIEW REWORK FAILED` changes class. A
+classifier written before them is written twice. Objectives 2 and 3 carry no such
+dependency but belong in the commit with the wording they serve.
+
+| phase | what | tier | blocked on |
+|---|---|---|---|
+| 1 | the live document harms | SL/SM | nothing |
+| 2 | the barren family, one piece | OM | nothing |
+| 3 | load and preflight refusals | SM | 2d's fixture shape |
+| 4a-4b | budget and gate plumbing | SM | nothing |
+| 4c | `REVIEW REWORK FAILED` | OM | **a decision** |
+| 5 | remaining coverage | SM | nothing |
+| 6 | the objective | FH + SM | phases 2 and 4; **a decision** |
+
+## Should the overnight skill implement this?
+
+**Yes for phases 1, 3, 4a-4b and 5. No for phase 2. Phase 6 not at all.**
+
+**The obvious objection dissolves.** The workers would be editing the runner that
+is running them, and each step's gate spawns the very file being edited - which
+is the failure that cost twenty minutes on 2026-09-08. Worktree isolation, the
+default, answers it: each worker edits its own checkout and runs the suite there;
+the orchestrator loaded `overnight.py` at process start and never reloads it; the
+next worker's worktree is cut from the integrated HEAD and so carries its
+predecessor's work. This is the one project where that property is load-bearing
+rather than incidental. **`run.isolation: in-place` must not be set**, and the
+worktree preflight probe will say so before any worker starts.
+
+**The gate must be narrow, and this plan makes that easy.** The full suite
+measured 12.4 minutes tonight; twelve steps gated on it is two and a half hours
+spent re-proving finished work, which is exactly what 1.0.3 told planners not to
+do. Every phase above names the sections covering it, so each step gates on
+`selftest.py --only <n>` plus `clean_tree`, and a `kind: gate` checkpoint
+carrying the full suite closes each phase. Four checkpoints, about fifty minutes,
+against a hundred and fifty. Note the mild recursion: until 4b lands a checkpoint
+runs only its own gates, so make the full suite the checkpoint's **own** gate
+rather than relying on `run.gates`.
+
+**What must stay out of the run:**
+
+- **Phase 2.** Its four substeps share one predicate and one mental model, and
+  four fresh workers each re-deriving "what does barren mean here" is precisely
+  the decomposition Anthropic's guidance warns against - by context boundary, not
+  by problem type. It is also the highest blast radius in the set: it alters the
+  wall path, where a subtle error mis-records a night instead of failing loudly.
+  Do it interactively at OM. If it must go overnight it is **one** step, not
+  four, at `sonnet/high`, with 2d split off as a second.
+- **Phase 4c**, until the blocking-or-resumable question is answered. A worker
+  will not settle that at 3am and should not be asked to.
+- **Phase 6.** The wording is the deliverable and it is a judgement call.
+
+**What the run buys beyond the work itself.** It is the first ledger under the
+sonnet-default tiers, so one grep of its logs settles the `costBasis` 1.5x
+question left open last session. It exercises `kind: gate` checkpoints in anger,
+which nothing ever has (T3). And it produces exactly the run-log evidence section
+F's objectives are defined over, from a plan whose steps were sized by somebody
+who had just read the code.
+
+**Sizing.** Eleven to thirteen build steps from the substeps above, plus a review
+per phase and four checkpoints: three to four hours of building, comfortably
+inside a night, with every step in the 20-55 call band section F calls the floor
+of the curve.
+
+**One prerequisite.** The plan is written into this project's own `overnight/`,
+which does not exist yet. And while the run is live, nothing else edits these
+files - the run commits to the branch as it goes, which is what it is for, but a
+second interactive session in the same tree is what hard constraint 1 forbids.
