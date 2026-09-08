@@ -135,10 +135,28 @@ so you need not trust this figure for long.
 It must print `SELFTEST PASS`. If it does not, nothing else in this manual is
 worth trying until it does.
 
+The full suite prints a progress line about once a minute, so "how long" has a
+number for an answer rather than a range:
+
+    [ 47%]  137/292 checks | section 13 | 8.2 min elapsed | ~9.3 min left
+
+The denominator is known before the run starts and the ETA is extrapolated from
+the mean time per check so far, so it tracks the machine's load rather than a
+figure written down on a quieter day. To watch it without tying up a terminal,
+run it unbuffered into a file and read the file's tail when you want to know:
+
+    python -u selftest.py > run.log 2>&1
+    Get-Content run.log -Tail 5          # PowerShell; -Wait follows it live
+
+Do not pipe the suite through `tail`, `grep` or `sort` - the pipe holds every
+byte until the process exits, and you get an empty log until the end. `--quiet`
+turns the line off.
+
 While working on the runner itself you can run part of it - `--list` names the
 sections, `--only 13,17` runs those and whatever they need, `--from 17` runs the
 rest of the suite. A partial run prints `SELFTEST PARTIAL OK`, never
-`SELFTEST PASS`, because only the whole suite may precede a launch.
+`SELFTEST PASS`, because only the whole suite may precede a launch - and it has
+no progress line, so two partial runs stay byte-comparable.
 
 **4. Start a new Claude Code session** so the skill list is re-read. `/overnight`
 is then available in every project (user scope) or in that project (project

@@ -43,6 +43,7 @@ somebody did, or an older install left one behind: `--force` fixes it.
 | `tools/tally.py` | where a worker's or an interactive session's tokens went, from its log |
 | `tools/progress.py` | one line per project, for a 3am "how is it going" - read-only |
 | `docs/ROADMAP.md` | what is not built yet, and why each matters |
+| `docs/audit-findings.md` | the 2026-09-08 audit of code against docs: verified findings, the efficiency objective restated, where judgement lives, and the proposed fix set |
 | `docs/releases/` | the notes published with each version tag |
 | `LICENSE` | GPL-3.0 |
 
@@ -121,6 +122,11 @@ has the numbers and the ranking.
   `--only 13,17` runs those and whatever they need, `--from 17` runs the rest.
   A partial run prints `SELFTEST PARTIAL OK` and never `SELFTEST PASS`, so it
   cannot be mistaken for the suite a launch is gated on.
+  **Run the full suite unbuffered into a file and read the file's tail** - it
+  prints a percent-complete line a minute (`python -u selftest.py > <log> 2>&1`,
+  then `Get-Content <log> -Tail 5`); never through `tail` or `grep`, which
+  buffer everything until exit. Print the `Get-Content` line, with the real
+  path, into the chat every time the full suite is launched.
 - **Every section declares how many checks it makes, and the suite fails if a
   section makes a different number.** A check silently dropped - or a whole
   section dropped out of `SECTIONS` - otherwise still ends in `SELFTEST PASS`,

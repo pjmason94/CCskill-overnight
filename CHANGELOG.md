@@ -5,6 +5,21 @@ All notable changes to this project are recorded here. Format loosely follows
 
 ## [1.0.3] - unreleased
 
+### Added
+
+- **The self-test prints a progress line about once a minute** on the full
+  suite: percent complete, checks done against the total, elapsed, and an ETA
+  from the mean time per check so far. The suite is 7 to 30 minutes and until
+  now printed nothing an operator could plan around, so "how long" could only be
+  answered with a range too wide to use - which happened twice in one session.
+  The denominator is `TOTAL_CHECKS`, known before the run starts; the ETA tracks
+  the machine's load rather than a figure measured on a quieter day. A partial
+  run (`--only`, `--from`) has no heartbeat, so two partial runs stay
+  byte-comparable, and `--quiet` turns it off on the full suite. Run the suite
+  unbuffered into a file (`python -u selftest.py > run.log 2>&1`) and tail the
+  file; never pipe it through `tail` or `grep`, which buffer everything until
+  exit.
+
 ### Changed
 
 - **Build steps now default to `sonnet/medium` instead of `opus/medium`.**

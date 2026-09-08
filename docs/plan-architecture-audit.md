@@ -1,5 +1,9 @@
 # Plan - audit the implementation against the theory
 
+> **Executed 2026-09-08.** The findings, F and G, and the proposed fix set are in
+> `audit-findings.md`. The heartbeat task below is done. This file is kept as the
+> record of what was asked.
+
 Written 2026-09-08 for a fresh **FH** session. Self-contained: it assumes no
 memory of the conversation that produced it, and nothing in it needs a transcript
 to be recovered.

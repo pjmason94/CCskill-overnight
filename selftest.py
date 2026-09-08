@@ -21,6 +21,17 @@ throwaway git repository, for no tokens.
                                       checks each makes
     python selftest.py --only 13,17   just those, plus anything they need
     python selftest.py --from 17      from there to the end of the suite
+    python selftest.py --quiet        the whole suite without the progress line
+
+The full suite prints a progress line about once a minute - percent complete,
+checks done against the total, elapsed, and an ETA from the mean time per check
+so far. Run it unbuffered into a FILE and read the file's tail on demand:
+
+    python -u selftest.py > run.log 2>&1
+    Get-Content run.log -Tail 5       (PowerShell; add -Wait to follow)
+
+Never pipe it through `tail`, `grep` or `sort`: the pipe holds every byte until
+the process exits, and a perfectly streamed heartbeat produces an empty log.
 
 IT TAKES MINUTES, NOT SECONDS - a QUARTER OF AN HOUR, against a docstring that
 claimed "under a minute" until 2026-09-07. Two runs that day measured 12 min
@@ -64,6 +75,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -401,12 +413,67 @@ class Ctx:
         self.shared = {}
         self.scenario_path = root / "scenario.json"
         self.scenario_path.write_text(json.dumps(SCENARIO), encoding="utf-8")
+        # The heartbeat. `total` is the denominator and doubles as the switch:
+        # None means no heartbeat, which is what a partial run and --quiet get.
+        self.total = None
+        self.started = time.time()
+        self.section = ""
+        self._stop = threading.Event()
+        self._thread = None
 
     def check(self, name, condition, detail=""):
         self.checks += 1
         print(f"  {'ok  ' if condition else 'FAIL'} {name}" + (f"  ({detail})" if detail and not condition else ""))
         if not condition:
             self.failures.append(name)
+
+    def start_heartbeat(self, total, every=60.0):
+        """One progress line a minute, on the FULL suite only.
+
+        The suite is 7 to 30 minutes and, until this existed, printed nothing an
+        operator could plan around: "how long" could only be answered with a
+        range too wide to be useful. The percentage is what makes the answer a
+        number. The denominator is TOTAL_CHECKS, known before the run starts, and
+        the ETA extrapolates from the mean time per check SO FAR rather than from
+        any fixed figure - the spread on this machine is load, not work, so a
+        fixed estimate is wrong on exactly the runs where it matters.
+
+        ON A TIMER THREAD, not from check(): the suite's minutes are spent inside
+        runner subprocesses, BETWEEN checks, and a heartbeat driven by the checks
+        went five minutes without a line the first time it was tried. A daemon
+        thread beats on the clock whatever the main thread is waiting on.
+
+        Not on a partial run and not under --quiet: those outputs stay
+        byte-identical to what they printed before, so two can be diffed. Written
+        as one flushed write, because the point is to be readable from a log file
+        while the suite is still running (redirect to a FILE and tail the file -
+        never pipe through `tail`, which buffers every byte until the process
+        exits).
+        """
+        self.total = total
+        self._thread = threading.Thread(target=self._heartbeat, args=(every,), daemon=True)
+        self._thread.start()
+
+    def stop_heartbeat(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def _heartbeat(self, every):
+        while not self._stop.wait(every):
+            self.beat()
+
+    def beat(self):
+        if not self.total:
+            return
+        elapsed = time.time() - self.started
+        done = self.checks
+        eta = (f"~{elapsed / done * (self.total - done) / 60:.1f} min left" if done
+               else "ETA after the first check")
+        sys.stdout.write(f"[{100 * done // self.total:3d}%]  {done}/{self.total} checks"
+                         + (f" | section {self.section}" if self.section else "")
+                         + f" | {elapsed / 60:.1f} min elapsed | {eta}\n")
+        sys.stdout.flush()
 
 
 def section_1_3(c):
@@ -2187,6 +2254,10 @@ def main(argv=None):
                        help="run from this section to the end of the suite")
     ap.add_argument("--list", action="store_true",
                     help="print the sections and exit")
+    ap.add_argument("--quiet", action="store_true",
+                    help="no progress heartbeat on the full suite (a partial run "
+                         "never has one), so the output matches what it printed "
+                         "before the heartbeat existed")
     args = ap.parse_args(argv)
 
     if args.list:
@@ -2218,10 +2289,13 @@ def main(argv=None):
 
     root = Path(tempfile.mkdtemp(prefix="overnight-selftest-"))
     c = Ctx(root)
+    if not partial and not args.quiet:
+        c.start_heartbeat(TOTAL_CHECKS)
     spent = []
     try:
         for key, _needs, expected, fn, _title in chosen:
             before, started = c.checks, time.time()
+            c.section = key
             fn(c)
             ran, took = c.checks - before, time.time() - started
             spent.append((key, ran, took))
@@ -2239,6 +2313,7 @@ def main(argv=None):
             print("\n--- run.log tail ---")
             print(c.shared["log"][-4000:])
     finally:
+        c.stop_heartbeat()
         if c.failures and os.environ.get("OVERNIGHT_KEEP"):
             print(f"kept {root}")
         else:
