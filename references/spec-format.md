@@ -38,7 +38,7 @@ run:
   decisions_file: overnight/DECISIONS-PENDING.md
   out: overnight/runs            # the parent of the run directory
   defaults:                      # tier per kind
-    build:      {model: opus,   effort: medium}
+    build:      {model: sonnet, effort: medium}
     review:     {model: opus,   effort: high}
     reflect:    {model: opus,   effort: high}
     diagnostic: {model: opus,   effort: high}

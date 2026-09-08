@@ -619,7 +619,7 @@ where the run directory is and that the tree is off limits.
 | `preamble` | none | a file prepended to every build brief; `{CHUNK}` in it is replaced by the step id |
 | `decisions_file` | `overnight/DECISIONS-PENDING.md` | where workers write questions and findings; read by reflect steps |
 | `out` | `overnight/runs` | the parent of the run directory |
-| `defaults` | opus/medium build; opus/high review, reflect, diagnostic | model and effort per kind: `build: {model: sonnet, effort: medium}` |
+| `defaults` | sonnet/medium build; opus/high review, reflect, diagnostic | model and effort per kind: `build: {model: opus, effort: medium}` |
 | `on_wall` | `park` | what to do when workers stop answering entirely: `park` waits and probes until the account is back, `stop` ends the run. See section 4 |
 | `wall_threshold` | 3 | consecutive workers returning NOTHING before that happens |
 | `park_poll_min` | 30 | minutes between probes while parked |
@@ -657,15 +657,49 @@ Commands run from the repository root through the shell, with a 30-minute
 timeout. A test node id in a gate is a **contract**: the brief names it, the
 worker creates it, the gate runs it. Write the gate before the brief.
 
+**A step's gate names its own test node ids. It is never the full suite.** A
+suite that takes 10 to 20 minutes, run after each of twenty 15-minute steps, is
+three to seven hours of a night spent re-proving work that was already proved -
+and it charges every step for every earlier step's tests. Gate a step on the
+nodes that step created:
+
+    gates:
+      - cmd: pytest -q tests/test_fits.py::test_fixture1_achievable
+
+The full suite belongs at a **checkpoint**: a `kind: gate` step, carrying no
+worker and costing no tokens, placed every few build steps.
+
+    - id: checkpoint-1
+      kind: gate
+      gates:
+        - cmd: pytest -q
+
+Checkpoints earn their keep twice. They catch the cross-step breakage a narrow
+gate cannot see, and - because the previous checkpoint passed - they **bound
+which steps could have caused it** to the handful since. Space them by how long
+you are willing to search, not by taste.
+
 ### Tiers
 
 `model` is whatever the `claude` CLI accepts (`sonnet`, `opus`, ...); `effort` is
 `low`, `medium` or `high`. Pick the model by the ceiling the step's hardest part
 needs and the effort by how many approaches must be weighed. Mechanical work with
 one obvious approach - a new attribute, a flattened wrapper, a test that walks a
-file - is sonnet/medium. A build with a narrow approach is opus/medium. Review,
-reflect and diagnostic want opus/high: they are judgement, and cheap relative to
-the build they judge.
+file - is sonnet/medium, and that is the **default for build steps**. A build
+that carries real design choice is sonnet/high before it is opus/medium: the
+middle rung is worth trying first. Review, reflect and diagnostic want opus/high:
+they are judgement, and cheap relative to the build they judge.
+
+**Do not downgrade the reviewer to pay for a cheaper builder.** These are not
+independent knobs. The reviewer is the compensating control for whatever the
+builder missed, so cutting both at once removes the thing that made the first cut
+safe. Reviews were 14% of a measured run's cost; the saving is in the thirty
+build steps, not the six reviews.
+
+A step keeps the model and effort it was spawned with for its whole life - the
+runner passes them once at process start and nothing changes them mid-step.
+They are also both part of the prompt-cache key, so a stable tier per step keeps
+one cache namespace rather than two.
 
 ## 8. Briefs
 
@@ -1102,6 +1136,12 @@ Measured on the first two runs, opus/medium build steps, opus/high reviews:
 | a rework after review | 10 - 13 | 60 - 80 | $5 - $5.50 |
 | a night of 12 - 24 steps | 4.6 - 8 h | | $40 - $130 |
 
+**These are opus/medium build figures and the default builder is now
+sonnet/medium**, which measured $0.051 an API call against opus at $0.090 on the
+same run. Read the build rows as an upper bound until a sonnet-default run has
+been tallied, and size `budget_usd_per_step` against them rather than against a
+figure two-thirds lower that has not been measured yet.
+
 **The cost figure is the CLI's own estimate**, the API-equivalent price of the
 tokens used. Workers run as `claude -p` with `ANTHROPIC_API_KEY` stripped from
 their environment (section 12), so on a subscription they spend the
@@ -1140,9 +1180,11 @@ belongs at roughly 2.5x the estimate: killing a worker at its expected time
 destroys the work that was about to be committed, which is precisely the waste
 being guarded against.
 
-**Sonnet for mechanical steps.** Where the approach is single and obvious,
-sonnet/medium is a third of the cost and as reliable. Where there is any breadth
-of approach to weigh, opus.
+**Sonnet for build steps, and that is now the default.** Measured over one real
+run, sonnet cost $0.051 an API call against opus at $0.090 at comparable context,
+and nothing in that ledger made sonnet the weak link - both steps that burned a
+second expensive attempt, and both a review sent back for rework, were opus.
+Reach for sonnet/high before opus/medium when a step carries design choice.
 
 ## 15. Judgement calls
 

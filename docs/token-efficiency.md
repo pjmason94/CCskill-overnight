@@ -349,6 +349,144 @@ premium above 200k tokens, which is where those workers were sitting, but it has
 not been verified and the tool does not model it. Treat Sonnet rows as a floor.
 The bucket *shares*, which is what the ranking above rests on, are unaffected.
 
+## Two methodologies, measured against each other
+
+Measured 2026-09-08. FinKit ran both methods in the same week on the same
+codebase, which makes this a controlled comparison rather than a cross-project
+guess: an **overnight run** of headless workers, and a **long interactive Opus
+session** launched with "unattended - ask me all questions now".
+
+| | overnight Opus workers | one long Opus session |
+|---|---|---|
+| API calls | 856 | 395 |
+| cost, list arithmetic | $77.43 | $71.77 |
+| **cost per call** | **$0.090** | **$0.182** |
+| mean context per call | ~110k | **290k** |
+| cache-read share | 56% | **79%** |
+| `.py` insertions | 1,667 (evening slice, $19.75) | 3,264 |
+| **cost per code line** | **$0.0118** | **$0.0220** |
+
+Two independent denominators agree at roughly 2x, and the mechanism is the one
+this document already established: cost is calls multiplied by context, and
+context grows through a session. The long run sat at 290k mean context, above the
+90-183k band of the twenty-two interactive sessions sampled earlier and well
+above the workers' 50-165k.
+
+**This inverts the objective in `CLAUDE.md`.** The worry was that an unattended
+run might cost 2x the same work done interactively. Measured, the long
+interactive run is the expensive one, and the runner's fresh context per step is
+a cost *advantage* rather than the overhead. The tasks were not identical
+(consolidation against exit measurements), so read 2x as suggestive; the context
+figure is the solid part.
+
+### The overhead that is not financial
+
+The long session spanned 8.38 hours, of which **5.81 (69%) were a single idle
+gap**. It finished at 01:36 - "Done. Six commits, tree clean, 923 passed" - and
+then sat until the operator returned at 07:24. Two and a half hours of work in an
+eight-hour night. It was not blocked on a question; it ran out of plan. **The
+long-session method is bounded by the queue it was handed, not by the clock.**
+
+### And the failure the runner cannot see
+
+Woodwork Guru is the mirror image: **sixteen steps STUCK in ten minutes**, 00:29
+to 00:39, every worker returning nothing at $0.00 - the usage wall, before the
+circuit breaker existed.
+
+The instructive part is what the adaptive surface did. `reflect-3` fired at
+**00:34, mid-cascade, after eight identical failures** - and returned `REFLECT NO
+CHANGE` at **$0.00**. `reflect-4` at 00:38, after fourteen. Both were barren
+themselves.
+
+**The runner's only judgement mechanism shares a failure mode with the failure it
+exists to catch**, because diagnosing "the provider is unavailable" requires the
+provider. An LLM supervisor watching the run would have been the seventeenth
+barren worker. What fixed it is a deterministic, out-of-band detector - Python
+counting empty returns - which cannot fail the way the thing it watches fails.
+
+That splits the design cleanly, and the split is the lesson:
+
+- **Infrastructural failure** (the wall, the network, a logged-out CLI, a
+  worktree defect): a deterministic check, out of band. An LLM here is strictly
+  worse - it shares the failure mode and costs money to do so.
+- **Semantic failure** (the plan is wrong, an interface is under-determined, a
+  gate is vacuous): needs judgement, and today only a reflect step supplies it,
+  at positions fixed at plan time.
+
+So a reflect triggered on "N consecutive failures" would be a mistake on its own.
+The trigger has to be guarded by the deterministic check first: no worker output
+means infrastructure, so park rather than spend a reflect; real work that failed
+its gates means semantic, and that is where a reflect earns its money.
+
+### Sonnet against Opus, on the same run
+
+| | calls | cost | per call | mean context |
+|---|---|---|---|---|
+| sonnet workers | 780 | $39.87 | **$0.051** | 81-170k |
+| opus workers | 856 | $77.43 | **$0.090** | 70-165k |
+
+Sonnet is **1.8x cheaper per call at comparable context**, and nothing in the
+ledger makes it the weak link: the two steps that burned a second expensive
+attempt (`5b-recognise` $14.53, `5b-liveness` $7.38) were both opus, and both
+steps a review sent back for rework were opus. This is why `DEFAULT_TIERS` now
+builds with sonnet.
+
+Every sonnet worker logged `contextWindow: 1000000`, so the 1M window is not a
+setting to reach for - it is already what a `model: sonnet` step gets.
+
+**One unresolved discrepancy.** Some sonnet workers report exactly 1.5x what list
+arithmetic gives, and it correlates perfectly with the absence of a
+`costBasis: "list"` field in the result event - present on the 1.0x rows, absent
+on the 1.5x ones. Either a real long-context premium above 200k or a CLI
+reporting change; these logs cannot separate them. It moves sonnet's advantage
+between 1.8x and 2.5x, and one grep of the next run's logs settles it. The
+earlier note in this document attributing the 1.5x to a long-context premium is
+**not supported** by the fuller sample: a 244k-peak worker reported 1.0x while a
+151k-peak worker reported 1.5x.
+
+## Assessing the code itself, not just what it cost
+
+Cost per line rewards verbosity, so it cannot stand alone. Two axes are wanted -
+how much judgement the work absorbed, and whether the result was any use - and
+the obvious instruments for the first are traps.
+
+**Cyclomatic complexity, Halstead volume and the Maintainability Index measure
+the code's shape.** On that scale tangled code scores as profound and a deep
+ten-line algorithm scores as trivial. They are worth having as a lint, and they
+are actively misleading as a measure of depth.
+
+Depth is better modelled as **how underdetermined the task was, and how much
+judgement it absorbed**. Three instruments, all from data a run already writes:
+
+- **Brief-to-code compression** - code lines produced per KB of brief.
+  `tools/tally.py` prints the brief size and git gives the insertions. A ratio
+  near 1 is transcription; a step that turned 8 KB of brief into 400 correct
+  lines did the thinking itself.
+- **Decision density** - `DECISIONS-PENDING.md` and the rulings a run produces
+  are a literal count of the questions that needed a person, per step or per 100
+  lines.
+- **Re-roll divergence** - the same brief, the same baseline commit, run twice,
+  outputs diffed. Two workers that invent the same interface were determined by
+  the brief; two that diverge prove the task carried real design choice, and
+  *the divergence is the measurement*. The A/B protocol in a project's own
+  `overnight/` is the worked form of this.
+
+Utility is the easier axis and every measure is retrospective and free:
+
+- **Survival** - what fraction of a run's inserted lines still exist at HEAD
+  after N days, by `git blame`. It needs elapsed time to mean anything: code less
+  than a day old has not been given the chance to be deleted.
+- **Morning edit distance** - the diff between a run's output and the next human
+  commit touching those files.
+- **Reach** - how many modules import or call it. Dead code scores zero however
+  elegant it is.
+- **Gate advancement** - did it move a previously-failing gate to passing, which
+  the ledger already records exactly.
+
+Read the two axes together. **High depth with low utility is the warning sign** -
+elaborate machinery nobody calls - while low depth with high utility is simply a
+good night's work.
+
 ## Re-measuring
 
     python tools/tally.py overnight/runs/<run name>

@@ -142,8 +142,16 @@ WALL_NOTE = (
 OVER_BUDGET = "OVER BUDGET"
 BUDGET_SUBTYPE = "error_max_budget_usd"
 KINDS = ("build", "review", "reflect", "gate")
+# Measured on the FinKit run of 2026-09-05/07, same project and comparable
+# context: sonnet workers cost $0.051 an API call against opus at $0.090, and
+# nothing in that ledger makes sonnet the weak link - both steps that burned a
+# second expensive attempt and both steps a review sent back for rework were
+# OPUS ones. So the builder is sonnet and the money is spent on the judgement
+# instead. Review, reflect and diagnostic stay opus/high DELIBERATELY: the
+# reviewer is the compensating control for a cheaper builder, and downgrading
+# both at once removes the thing that made the first downgrade safe.
 DEFAULT_TIERS = {
-    "build": {"model": "opus", "effort": "medium"},        # OM
+    "build": {"model": "sonnet", "effort": "medium"},      # SM
     "review": {"model": "opus", "effort": "high"},         # OH
     "reflect": {"model": "opus", "effort": "high"},        # OH
     "diagnostic": {"model": "opus", "effort": "high"},     # OH
@@ -182,7 +190,16 @@ TOOL_USAGE_NOTE = (
     " unchanged - narrow it. Waiting is not free: it is dead time against this"
     " step's clock, and a command that runs for several minutes can outlive the"
     " cache your context is served from, so the turn after it re-reads everything"
-    " you have accumulated at full price instead of a tenth of it.\n")
+    " you have accumulated at full price instead of a tenth of it.\n"
+    "Re-read your own diff before you commit. Run `git diff` once, at the end,"
+    " and read it as though somebody else had written it - looking for the local"
+    " mistakes that are invisible while writing and obvious afterwards: an"
+    " inverted condition, an off-by-one, the wrong variable of two similar names,"
+    " a copy-pasted line whose second half was never adjusted, a debug print or a"
+    " commented-out block left behind. This is ONE call at the end, not a habit of"
+    " re-reading as you go, and it is deliberately cheap. It exists because the"
+    " review step that follows you sees the design and rarely catches this class"
+    " at all, and the gate only catches what a test happens to cover.\n")
 
 REVIEW_SCHEMA = {
     "type": "object",
@@ -3106,7 +3123,7 @@ run:
   preamble: <path to a brief preamble file; {CHUNK} is replaced by the step id>
   decisions_file: overnight/DECISIONS-PENDING.md
   defaults:                      # tier per kind; OM build, OH review/reflect/diagnostic
-    build: {model: opus, effort: medium}
+    build: {model: sonnet, effort: medium}
   gates:                         # universal, appended to every build step's own
     - {name: ..., cmd: <shell command, exit 0>}
     - {clean_tree: true}

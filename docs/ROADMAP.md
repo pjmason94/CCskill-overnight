@@ -244,6 +244,47 @@ pays its own prefix and does the same reading, so it only saves what the reading
 would have left behind, and a parallel fan-out costs more than it saves. It needs
 a measured experiment on one real step first.
 
+## 14. An `integrate` step, and a deterministic answer to "which step broke it"
+
+Two halves of one piece, and neither is much use alone.
+
+**The step kind.** A build step produces one deliverable against a narrow brief
+and is gated on its own test node ids. Nothing in the plan produces the thing
+that *spans* those deliverables - the module that wires four others together, the
+one report that presents them coherently. Today that work is written as an
+ordinary build step and it goes badly: FinKit's `5b-report`, which consolidates
+liveness, recognise, reconstruct and issues into one `DIGEST.md`, took two
+attempts and ran **2.27x its estimate - the worst overrun in the run**. Its
+neighbour `5b-issues` reached back and edited `liveness.py` to make its own work
+fit, renegotiating an interface nobody had fixed.
+
+So: `kind: integrate`, at opus/high, gated on the **full suite** rather than on
+node ids. It is the one step whose context is legitimately wide, which makes it
+the most expensive step in any run - intrinsically, not as a defect. Bound it by
+handing it **pre-computed interface summaries rather than the modules
+themselves**: the signatures of everything it consolidates, extracted by a script
+rather than read by the worker.
+
+That brief is generated from the dependency graph, which is why **this waits on
+the step-dependency rework and should be built with it, not before it.** An
+integrate step is the consumer that graph exists to serve: it is the step that
+closes a set of dependencies, and "what feeds you" is exactly what its brief
+needs to say.
+
+**The attribution half.** When the full suite fails at an integrate or checkpoint
+step, the run must not hand a worker the whole night's work and ask it to guess.
+The previous checkpoint passed, so the culprit is one of the few steps since, and
+the runner already knows the commit each of them produced. `git bisect run` over
+that range, against the specific failing test, names the step **deterministically
+- no worker, no tokens, no judgement.**
+
+This is the same split as the usage-wall circuit breaker, and for the same
+reason: *which* step broke the suite is a search over commits, so Python and git
+own it. *Why* it broke, and what to do, is semantic, and only then is a worker
+worth spawning - now handed one named step and one named failing test instead of
+a night's diff. Cost is log2(N) suite runs, which is the argument for spacing
+checkpoints by the search you are willing to pay for.
+
 ## 4. Cross-platform verification
 
 Developed and run on Windows. `fresh_shell` branches - PowerShell with the PATH

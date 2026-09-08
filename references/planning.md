@@ -150,9 +150,37 @@ steps start clean. Do not reach for `--reset-state` to achieve this: it forgets
 every outcome in the plan, including the ones worth keeping. Steps that are
 genuinely unchanged keep their ids and their history.
 
-Propose a **tier per step** and say it: mechanical work with one obvious approach
-at Sonnet medium; a build with a narrow approach at Opus medium; review, reflect
-and diagnostic at Opus high. Never the top tier headless.
+### Cut every step to fit Sonnet medium, and justify anything above it
+
+**The default build tier is `sonnet/medium`, and a correctly cut step does not
+need more than that.** Measured on one real run at comparable context, sonnet
+cost $0.051 an API call against opus at $0.090, and nothing in that ledger made
+sonnet the weak link - both steps that burned a second expensive attempt, and
+both steps a review sent back for rework, were opus ones.
+
+So the tier is not a free dial to turn up. Work through it in this order:
+
+1. **Assume `sonnet/medium`.** One deliverable, one obvious approach, an exact
+   test node id, about fifteen minutes.
+2. **If the step seems to need more, suspect the step before the tier.** Wanting
+   a stronger model is usually the same signal as an over-long estimate: the step
+   carries more than one decision. Splitting it is nearly always better than
+   escalating it, and it is free.
+3. **If it genuinely carries breadth of approach that cannot be split out, go to
+   `sonnet/high`** - the middle rung, which raises deliberation without changing
+   the price per token.
+4. **Only reach `opus/medium` where the step's hardest part needs a higher
+   ceiling**, not merely more thinking. Ceiling and deliberation are different
+   axes: more effort adds depth within a model's reach and never extends it.
+
+**State the tier for every step and, for anything above `sonnet/medium`, one
+sentence saying why** - in the proposal to the user, not only in the spec. An
+escalation nobody has to justify is an escalation that spreads to every step.
+
+Review, reflect and diagnostic stay `opus/high` and are not candidates for this
+economy: the reviewer is the compensating control for a cheaper builder, so
+cutting both at once removes the thing that made the first cut safe. Never the
+top tier headless.
 
 ## 4. Write the gates
 
@@ -160,8 +188,27 @@ Every exit criterion that is a claim about behaviour becomes a **named test node
 id**, identical in the brief and in the step's gates. The worker writes the test;
 the gate runs it.
 
-Universal gates go in `run.gates` and are appended to every build step: the whole
-suite, any checksum or lint the project keeps, and `{clean_tree: true}`.
+**A step's gates name that step's own test node ids. The whole suite is NEVER a
+per-step gate.** A 10-20 minute suite run after each of twenty 15-minute steps is
+three to seven hours of the night spent re-proving finished work, and it charges
+every step for every earlier step's tests. It is also the wrong signal: a step
+that fails on a test it never touched tells the morning nothing about that step.
+
+Universal gates go in `run.gates` and are appended to every build step, so keep
+them **cheap and local**: `{clean_tree: true}`, a fast lint, a checksum. Anything
+that takes minutes does not belong there.
+
+The full suite goes in a **checkpoint** - a `kind: gate` step carrying no worker
+and costing no tokens - every three to five build steps:
+
+    - id: checkpoint-1
+      kind: gate
+      gates:
+        - cmd: pytest -q
+
+Space them by how far back you are willing to search when one fails: the previous
+checkpoint passed, so a failure is attributable to the handful of steps since it,
+and that range is the whole value of placing them at all.
 
 Gate forms are in `references/spec-format.md`. A gate is a command that exits 0
 or not - never a judgement.
@@ -186,6 +233,28 @@ not at the end**, and what it must do when it is stuck rather than guess.
 **Each brief** names the two or three files to read and what is wrong with them
 today, states the one deliverable, names the exact test node id, and says what
 the step must **not** build or touch. Point at documents; do not restate them.
+
+**And it names both directions of the interface: what feeds this step, and what
+this step feeds.** A `## Read first` section giving the former is the easy half
+and is usually written. The second half is the one that is missed, and it is the
+one that pays:
+
+    ## Feeds
+    `digest/report.py` will call `mark_liveness(rows, spec) -> list[Mark]`.
+    That signature is FIXED. If it is wrong, REPORT it in
+    DECISIONS-PENDING.md - do not change it to suit this step.
+
+Without it a worker that finds an upstream signature inconvenient simply
+**renegotiates an interface nobody fixed**: on one real run a step reached back
+and edited the module upstream of it so its own work would fit, and the
+integrating step downstream then had to reconcile two designs that had each been
+built correctly against different assumptions. Naming what a step feeds does two
+jobs at once - it holds the step to its objective while it is running, and it is
+the contract the integrating step is later assembled from.
+
+Where a step genuinely has no downstream consumer yet, say **"nothing consumes
+this yet"** rather than leaving the section out; an absent section reads as an
+oversight, and the planner cannot tell the two apart when it re-plans.
 
 ## 6. Ignore the run's output
 

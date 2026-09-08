@@ -3,6 +3,82 @@
 All notable changes to this project are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.3] - unreleased
+
+### Changed
+
+- **Build steps now default to `sonnet/medium` instead of `opus/medium`.**
+  Measured over one real 27-worker run, same project and comparable context:
+  sonnet cost **$0.051 an API call against opus at $0.090**, and nothing in that
+  ledger made sonnet the weak link - the two steps that burned a second expensive
+  attempt (`$14.53` and `$7.38`) were both opus, and so were both steps a review
+  sent back for rework.
+
+  **Review, reflect and diagnostic stay `opus/high`, deliberately.** The reviewer
+  is the compensating control for whatever the builder missed, so downgrading
+  both at once removes the thing that made the first downgrade safe. The
+  arithmetic agrees: reviews were 14% of that run's cost, and cutting them to
+  medium would save about $7 on a run whose build cost is falling by $50 anyway.
+  The saving belongs in the thirty build steps, not the six reviews.
+
+  Set `defaults: {build: {model: opus, effort: medium}}` in the spec to restore
+  the old behaviour for a plan that wants it, or `model:` on the step itself.
+  Reach for `sonnet/high` before `opus/medium` when a build carries real design
+  choice - the middle rung was previously skipped entirely.
+
+  **Existing plans that set their own tiers are unaffected.** A plan that says
+  nothing about tiers will build with sonnet from now on, so size
+  `budget_usd_per_step` against the opus figures in README section 14 until a
+  sonnet-default run has been tallied.
+
+- **Every brief now names what the step FEEDS, not only what feeds it.** The
+  `## Read first` half was already the convention and was written; the downstream
+  half was missed everywhere, and it is the one that pays. Without it a worker
+  that finds an upstream signature inconvenient renegotiates an interface nobody
+  fixed - on one real run a step reached back and edited the module upstream of
+  it so its own work would fit, and the integrating step downstream then had to
+  reconcile two designs each built correctly against different assumptions.
+  Naming what a step feeds holds it to its objective while it runs, and is the
+  contract the integrating step is later assembled from. A step with no consumer
+  yet must say so rather than omit the section, because an absent section and a
+  deliberate "nothing consumes this yet" are otherwise indistinguishable.
+
+- **The planner is told to cut every step to fit `sonnet/medium`, and to justify
+  anything above it in one sentence.** Wanting a stronger model is usually the
+  same signal as an over-long estimate - the step carries more than one decision -
+  so splitting is tried before escalating, `sonnet/high` is the next rung rather
+  than `opus/medium`, and ceiling and deliberation are named as different axes.
+  An escalation nobody has to justify is one that spreads to every step.
+
+- **Every build worker is now asked to re-read its own diff before committing.**
+  One `git diff` at the end, read as though somebody else had written it, looking
+  for the class of local mistake that is invisible while writing and obvious
+  afterwards: an inverted condition, an off-by-one, the wrong one of two similar
+  names, a half-adjusted copy-paste, a debug print left behind. Deliberately one
+  call at the end rather than a habit of re-reading as it goes. It exists because
+  the review step that follows sees the design and rarely catches this class, and
+  the gate only catches what a test happens to cover.
+
+- **The README now says plainly that a step's gate is never the full suite**, and
+  what to do instead. A 10-20 minute suite run after each of twenty 15-minute
+  steps is three to seven hours of a night spent re-proving finished work. Gate a
+  step on the test node ids it created; put the full suite in a `kind: gate`
+  checkpoint every few steps, which costs no tokens and bounds which steps could
+  have broken it. Both forms already worked.
+
+  **`references/planning.md` said the opposite** and had to be corrected: it
+  instructed the planner to append "the whole suite" to every build step through
+  `run.gates`. The cost was mandated rather than merely undocumented.
+
+- `docs/token-efficiency.md` gains two sections. **Two methodologies, measured
+  against each other**: an overnight run and a long interactive Opus session on
+  the same codebase in the same week, where the long session cost ~2x per API
+  call and per code line, spent 69% of its night idle having run out of plan, and
+  where the runner's own reflect steps went barren mid-cascade because an
+  in-band judgement step shares a failure mode with the outage it is meant to
+  catch. And **Assessing the code itself**: why cyclomatic complexity and the
+  Maintainability Index mislead as depth measures, and what to use instead.
+
 ## [1.0.2] - 2026-09-08
 
 ### Added

@@ -537,8 +537,12 @@ def section_1_3(c):
     # The runner records the tier it ASKED for; the commit trailer names
     # whatever the child session's own attribution names, which on 2026-09-06
     # was Opus for a step spawned sonnet/medium.
-    check("the ledger records the tier the runner asked for",
-          steps.get("s1", {}).get("tier") == "opus/medium",
+    # This also pins DEFAULT_TIERS: the fixture sets no `defaults`, so a build
+    # step lands on whatever the runner's default is. It read opus/medium until
+    # 2026-09-08 and sonnet/medium after, and the check failing is how a change
+    # to that default announces itself rather than passing silently.
+    check("the ledger records the tier the runner asked for (the build default)",
+          steps.get("s1", {}).get("tier") == "sonnet/medium",
           str(steps.get("s1", {}).get("tier")))
     check("...for a review step too, at its own tier",
           steps.get("review:s1", {}).get("tier") == "opus/high",
