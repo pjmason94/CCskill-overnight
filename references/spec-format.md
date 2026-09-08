@@ -18,7 +18,8 @@ run:
   budget_usd_per_step: 40        # optional; --max-budget-usd on each worker, and
                                  # a step's own `budget_usd` overrides it. A build
                                  # attempt that trips it is OVER BUDGET, is not
-                                 # retried, and blocks the plan
+                                 # retried, and blocks the plan. Must be a
+                                 # positive number; refused at load if not
   continuations: 0               # extra workers ONE ATTEMPT may use when the cap
                                  # cuts one off part-way: the next gets a fresh cap
                                  # and the tree as the last left it, so the money
@@ -34,7 +35,9 @@ run:
                                  # universal gates pass in your tree and fail in
                                  # a fresh one, which is what a missing one looks
                                  # like
-  preamble: overnight/briefs/_preamble.md    # {CHUNK} is replaced by the step id
+  preamble: overnight/briefs/_preamble.md    # {CHUNK} is replaced by the step id;
+                                 # refused at preflight if the path does not
+                                 # resolve to a file
   decisions_file: overnight/DECISIONS-PENDING.md
   out: overnight/runs            # the parent of the run directory
   defaults:                      # tier per kind
@@ -54,16 +57,25 @@ steps:
   - id: 2a-parser
     kind: build
     title: one line saying what it delivers
-    brief: overnight/briefs/2a-parser.md
-    model: sonnet                # per-step tier override
-    effort: medium
+    brief: overnight/briefs/2a-parser.md    # a still-to-run build step's brief is
+                                 # stat'd at preflight and refused if it does
+                                 # not resolve to a file
+    model: sonnet                # per-step tier override; not validated - the
+                                 # CLI's accepted values cannot be enumerated
+                                 # without drifting stale
+    effort: medium                # low | medium | high; a bad value here or in
+                                 # run.defaults.<kind>.effort is refused at load
     expected_min: 15             # REQUIRED on a build step still to run. The
                                  # clock declines to START a step that cannot
                                  # finish before the stop time; it is also
                                  # recorded beside the actual. A step you
                                  # cannot size is one you have not finished
                                  # cutting - split it until you can
-    timeout_min: 40              # hard kill; about 2.5x the estimate
+    timeout_min: 40              # hard kill; about 2.5x the estimate. Must
+                                 # exceed expected_min - a build step that
+                                 # cannot outlast its own estimate is refused
+                                 # at load, since it would fail every attempt
+                                 # regardless of what the worker does
     budget_usd: 6                # this step's own cap, overriding the run's
     gates:                       # this step's own, run before the universal ones
       - {cmd: python -m pytest -q tests/test_parser.py::test_handles_empty_input}

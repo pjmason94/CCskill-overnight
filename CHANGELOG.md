@@ -157,6 +157,30 @@ rather than copied into each caller.
   became the default in `1.0.3` now have a row each and a paragraph on when to
   reach for which.
 
+- **A brief or preamble path that does not exist is refused before a worker
+  ever starts.** `read_text` returns `""` on any `OSError`, so a typo in a
+  build step's `brief` or in `run.preamble` used to spawn a worker at 02:00 on
+  nothing but a header and a gate list - three attempts and an opus diagnostic
+  over a step nobody wrote. `preflight` now stats every still-to-run build
+  step's `brief` and `run.preamble`, if set, and refuses with the full list of
+  missing paths before doing anything else.
+
+- **A mistyped `effort` or `run.budget_usd_per_step` is refused at load, not
+  discovered as a step that goes barren all night.** `load_spec` already
+  refused a bad `budget_usd` on a step; it now does the same for `effort`
+  (a step's own, and every kind's `run.defaults.<kind>.effort`) against
+  `low`/`medium`/`high`, and for `run.budget_usd_per_step`. `model` stays
+  unchecked - it cannot be enumerated without drifting stale, and F2b (`1.0.3`,
+  above) already catches a bad one at runtime.
+
+- **A `timeout_min` that cannot outlast its own `expected_min` is refused at
+  load.** A build step whose worker is killed before it could plausibly finish
+  the work it was estimated to take fails every attempt regardless of what the
+  worker does - not a timeout, a spec that cannot pass. `load_spec` now
+  compares a still-to-run build step's `timeout_min` (its own, or
+  `run.worker_timeout_min`) against its `expected_min` and refuses, naming
+  every offending step, the same way an unsized step already does.
+
 - Wording, all found by the same audit: the composed brief's order omitted the
   tool-usage note that sits between the header and the brief; `--progress` and
   `--run` were missing from the flag table; the layout diagram omitted

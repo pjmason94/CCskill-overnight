@@ -99,7 +99,10 @@ run:
   name: selftest
   hours: 1
   attempts: 3
-  worker_timeout_min: 2
+  # Comfortably above the largest expected_min below (15) - A2 refuses a plan
+  # whose timeout cannot outlast its own estimate, and this bound never
+  # actually elapses against the fake worker regardless of its size.
+  worker_timeout_min: 20
   # PINNED, not inherited. Isolation is the default now, and every in-place
   # defence below - the reset between attempts, the quarantine, the rescue tag,
   # the refusal over a foreign commit - is a defence of the tree the operator
@@ -152,7 +155,7 @@ run:
   name: isolated
   hours: 1
   attempts: 1
-  worker_timeout_min: 2
+  worker_timeout_min: 20
   isolation: worktree
   preamble: overnight/briefs/_preamble.md
   gates:
@@ -175,7 +178,7 @@ run:
   name: default-iso
   hours: 1
   attempts: 2
-  worker_timeout_min: 2
+  worker_timeout_min: 20
   preamble: overnight/briefs/_preamble.md
   gates:
     - {name: suite, cmd: python -m pytest -q tests/test_base.py}
@@ -198,7 +201,7 @@ run:
   name: budget
   hours: 1
   attempts: 3
-  worker_timeout_min: 2
+  worker_timeout_min: 20
   budget_usd_per_step: 6
   preamble: overnight/briefs/_preamble.md
   gates:
@@ -223,7 +226,7 @@ run:
   name: continue
   hours: 1
   attempts: 3
-  worker_timeout_min: 2
+  worker_timeout_min: 20
   budget_usd_per_step: 6
   continuations: 1
   preamble: overnight/briefs/_preamble.md
@@ -250,7 +253,7 @@ run:
   name: foreign
   hours: 1
   attempts: 1
-  worker_timeout_min: 2
+  worker_timeout_min: 20
   isolation: in-place              # the refusal being tested is an in-place defence
   preamble: overnight/briefs/_preamble.md
   gates:
@@ -274,7 +277,7 @@ run:
   name: wall
   hours: 1
   attempts: 3
-  worker_timeout_min: 2
+  worker_timeout_min: 20
   preamble: overnight/briefs/_preamble.md
   gates:
     - {name: suite, cmd: python -m pytest -q tests/test_base.py}
@@ -2160,7 +2163,10 @@ run:
   name: selftest
   hours: 1
   attempts: 1
-  worker_timeout_min: 2
+  # Above expected_min below (600) - A2 refuses a plan whose timeout cannot
+  # outlast its own estimate, and this step's whole point is that the CLOCK
+  # skips it, not that its worker ever runs long enough to hit this bound.
+  worker_timeout_min: 700
   isolation: in-place
   preamble: overnight/briefs/_preamble.md
   gates:
@@ -2252,6 +2258,70 @@ def section_25(c):
     done = listing(prep("size-zero", SPEC.replace("expected_min: 15", "expected_min: 0")))
     check("...and so is zero", done.returncode != 0, (done.stdout + done.stderr)[-200:])
 
+    # -- F2a: a mistyped effort or budget cap is refused at load, not at 2am -
+    # (the second layer, the wall not looping over a step that can never
+    # start, is F2b and landed in phase 2 - see docs/audit-findings.md)
+    bad_step_effort = SPEC.replace(
+        "    kind: build\n    title: passes first time",
+        "    kind: build\n    effort: mediumish\n    title: passes first time")
+    done = listing(prep("effort-bad-step", bad_step_effort))
+    both = done.stdout + done.stderr
+    check("a step-level effort outside low/medium/high is refused at load",
+          done.returncode != 0 and "effort" in both and "mediumish" in both, both[-300:])
+
+    bad_default_effort = SPEC.replace(
+        "run:\n  name: selftest",
+        "run:\n  name: selftest\n  defaults:\n    build: {effort: mediumish}")
+    done = listing(prep("effort-bad-default", bad_default_effort))
+    both = done.stdout + done.stderr
+    check("a bad effort in run.defaults is refused the same way",
+          done.returncode != 0 and "run.defaults" in both, both[-300:])
+
+    bad_budget_per_step = SPEC.replace(
+        "run:\n  name: selftest", "run:\n  name: selftest\n  budget_usd_per_step: -5")
+    done = listing(prep("budget-per-step-bad", bad_budget_per_step))
+    both = done.stdout + done.stderr
+    check("a non-positive run.budget_usd_per_step is refused at load",
+          done.returncode != 0 and "budget_usd_per_step" in both, both[-300:])
+
+    # -- A2: a timeout that cannot outlast its own estimate is refused -------
+    # Without this, a build step whose worker is killed before it could
+    # plausibly finish the work it was estimated to take fails every attempt
+    # regardless of what the worker does - not a timeout, a spec that cannot
+    # pass.
+    too_short_timeout = SPEC.replace("worker_timeout_min: 20", "worker_timeout_min: 5")
+    done = listing(prep("timeout-too-short", too_short_timeout))
+    both = done.stdout + done.stderr
+    check("timeout_min <= expected_min is refused, not doomed to fail all night",
+          done.returncode != 0 and "timeout_min" in both and "expected_min" in both,
+          both[-300:])
+
+    # -- F1: a brief or preamble path that does not exist is refused early --
+    # `load_spec` only knows the key is present, not that the path resolves -
+    # the repo root is only known at preflight. Without this, the worker is
+    # spawned on a preamble, a header and a gate list, nothing else.
+    missing_brief = SPEC.replace("brief: overnight/briefs/s1.md",
+                                 "brief: overnight/briefs/nope.md")
+    where = prep("brief-missing", missing_brief)
+    scen = root / "scenario-brief-missing.json"
+    scen.write_text("{}", encoding="utf-8")
+    done = run_runner(where, scen)
+    both = done.stdout + done.stderr
+    check("a build step's brief that does not exist is refused before any worker starts",
+          done.returncode == 2 and "nope.md" in both, both[-400:])
+    check("...and no worker log was written for it",
+          not (where / "overnight" / "runs" / "selftest" / "s1").exists(), "")
+
+    missing_preamble = SPEC.replace("preamble: overnight/briefs/_preamble.md",
+                                    "preamble: overnight/briefs/absent.md")
+    where = prep("preamble-missing", missing_preamble)
+    scen2 = root / "scenario-preamble-missing.json"
+    scen2.write_text("{}", encoding="utf-8")
+    done = run_runner(where, scen2)
+    check("a run.preamble that does not exist is refused the same way",
+          done.returncode == 2 and "absent.md" in (done.stdout + done.stderr),
+          (done.stdout + done.stderr)[-400:])
+
     # -- a step that will not fit is skipped, not the end of the run --------
     # Stopping the run was the alternative, on the grounds that skipping can build
     # on ground that was never laid. Skipping wins because stopping throws away the
@@ -2337,7 +2407,7 @@ SECTIONS = [
     ("22",  (),          17,   section_22, "a cut-off worker is continued"),
     ("23",  (),          12,   section_23, "stranded work is retested, not discarded"),
     ("24",  (),          20,   section_24, "the clock: --until, and the stop it enforces"),
-    ("25",  (),          23,   section_25, "expected_min is required, and it schedules"),
+    ("25",  (),          30,   section_25, "expected_min is required, and it schedules"),
 ]
 
 TOTAL_CHECKS = sum(s[2] for s in SECTIONS)

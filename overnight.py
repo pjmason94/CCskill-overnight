@@ -158,6 +158,7 @@ WALL_NOTE = (
 OVER_BUDGET = "OVER BUDGET"
 BUDGET_SUBTYPE = "error_max_budget_usd"
 KINDS = ("build", "review", "reflect", "gate")
+EFFORTS = ("low", "medium", "high")
 # Measured on the FinKit run of 2026-09-05/07, same project and comparable
 # context: sonnet workers cost $0.051 an API call against opus at $0.090, and
 # nothing in that ledger makes sonnet the weak link - both steps that burned a
@@ -451,8 +452,27 @@ def load_spec(path):
     steps = data["steps"]
     if not isinstance(steps, list) or not steps:
         raise SpecError("`steps` must be a non-empty list")
+    # A bad `effort` or `budget_usd_per_step` is otherwise caught only at
+    # runtime, as a worker the CLI rejects outright - which the circuit breaker
+    # cannot tell apart from an environmental failure (see F2 in
+    # docs/audit-findings.md) and so parks the run for the night instead of
+    # naming the typo. `model` stays unchecked: the runner cannot enumerate what
+    # the CLI accepts without drifting stale.
+    if "budget_usd_per_step" in run:
+        try:
+            if float(run["budget_usd_per_step"]) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise SpecError("run.budget_usd_per_step must be a positive number,"
+                            f" not {run['budget_usd_per_step']!r}")
+    for kind, tier in (run.get("defaults") or {}).items():
+        effort = (tier or {}).get("effort")
+        if effort is not None and effort not in EFFORTS:
+            raise SpecError(f"run.defaults.{kind}.effort must be one of {EFFORTS},"
+                            f" not {effort!r}")
     seen = set()
     unsized = []
+    short_timeout = []
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
             raise SpecError(f"step {i} is not a mapping")
@@ -466,6 +486,10 @@ def load_spec(path):
         if kind not in KINDS:
             raise SpecError(f"step {sid!r}: kind {kind!r} not in {KINDS}")
         step["kind"] = kind
+        effort = step.get("effort")
+        if effort is not None and effort not in EFFORTS:
+            raise SpecError(f"step {sid!r}: effort must be one of {EFFORTS}, not"
+                            f" {effort!r}")
         if kind == "build" and not step.get("brief"):
             raise SpecError(f"step {sid!r}: a build step needs a `brief` file")
         # A BUILD STEP STILL TO RUN MUST CARRY AN ESTIMATE, and the refusal is at
@@ -494,6 +518,19 @@ def load_spec(path):
                 except (TypeError, ValueError):
                     raise SpecError(f"step {sid!r}: expected_min must be a positive"
                                     f" number of minutes, not {est!r}")
+                else:
+                    # A2: a build step whose worker gets killed for running long
+                    # BEFORE it could plausibly finish the work it was estimated
+                    # to take is not a timeout, it is a spec that cannot pass -
+                    # every attempt burns the full timeout_min and is recorded a
+                    # failure regardless of what the worker does.
+                    timeout = step.get("timeout_min", run.get("worker_timeout_min", 90))
+                    try:
+                        if float(timeout) <= float(est):
+                            short_timeout.append(
+                                f"{sid} (timeout_min {timeout} <= expected_min {est})")
+                    except (TypeError, ValueError):
+                        pass
         if kind == "review":
             if not step.get("of"):
                 raise SpecError(f"step {sid!r}: a review step needs `of: <step id>`")
@@ -526,6 +563,13 @@ def load_spec(path):
             " the stop time, and a step nobody can size is a step nobody scoped -"
             " which is a planning failure, and cheaper to fix here than at 03:00."
             " Steps that have already run are exempt: their actual is recorded.")
+    if short_timeout:
+        raise SpecError(
+            f"build step(s) whose timeout_min cannot finish the estimated work: "
+            f"{'; '.join(short_timeout)}. A worker killed before it could plausibly"
+            " finish the work it was estimated to take will fail every attempt"
+            " regardless of what it does - raise timeout_min (or run.worker_"
+            "timeout_min) above expected_min, or lower the estimate.")
     return data
 
 
@@ -2923,6 +2967,24 @@ class Runner:
 
     # -- the loop ------------------------------------------------------------
     def preflight(self):
+        # A typo in a brief path is otherwise read as an empty string
+        # (`read_text` returns "" on any OSError) - the worker gets a preamble,
+        # a header and a gate list, and nothing else, and spends three attempts
+        # and an opus diagnostic over a step nobody wrote. `load_spec` cannot
+        # catch this: it only knows the repo root here.
+        missing = []
+        for step in self.spec["steps"]:
+            if step["kind"] == "build" and not step.get("done") \
+                    and not (self.repo / step["brief"]).exists():
+                missing.append(f"{step['id']}: brief {step['brief']}")
+        preamble_path = self.run_cfg.get("preamble")
+        if preamble_path and not (self.repo / preamble_path).exists():
+            missing.append(f"run.preamble: {preamble_path}")
+        if missing:
+            self.log("REFUSING TO START: path(s) named in the plan do not exist:")
+            for line in missing:
+                self.log("    " + line)
+            raise SystemExit(2)
         if not self.has_git:
             # Noted ONCE, at the top of the run, and never again: the operator was
             # told loudly at plan time and does not need it beside every step.

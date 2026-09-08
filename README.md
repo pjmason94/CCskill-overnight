@@ -664,9 +664,9 @@ where the run directory is and that the tree is off limits.
 | `review_timeout_min` | 30 | the same for a review worker |
 | `reflect_timeout_min` | 30 | the same for a reflect worker |
 | `diagnostic_timeout_min` | 20 | the same for the diagnostic pass |
-| `budget_usd_per_step` | none | passed to every worker as `--max-budget-usd`; a step's own `budget_usd` overrides it. A build attempt that trips it is OVER BUDGET and is not retried (see section 14 on what that figure is) |
+| `budget_usd_per_step` | none | passed to every worker as `--max-budget-usd`; a step's own `budget_usd` overrides it. A build attempt that trips it is OVER BUDGET and is not retried (see section 14 on what that figure is). Must be a positive number; a bad value is refused at load, not at 2am |
 | `continuations` | 0 | extra workers one attempt may use when the budget cuts one off part-way, carrying its work forward |
-| `preamble` | none | a file prepended to every build brief; `{CHUNK}` in it is replaced by the step id |
+| `preamble` | none | a file prepended to every build brief; `{CHUNK}` in it is replaced by the step id. Refused at preflight if the path does not resolve to a file |
 | `decisions_file` | `overnight/DECISIONS-PENDING.md` | where workers write questions and findings; read by reflect steps |
 | `out` | `overnight/runs` | the parent of the run directory |
 | `defaults` | sonnet/medium build; opus/high review, reflect, diagnostic | model and effort per kind: `build: {model: opus, effort: medium}` |
@@ -703,12 +703,12 @@ still be outside the repository, for the reason section 6 gives.
 | `id` | all | unique; used as an address in logs, state and `--only`. `review:<step>` is the convention for reviews. Any character is allowed; the step's directory name has `<>:"/\|?*` replaced by `-` |
 | `kind` | all | `build` (default), `review`, `reflect`, `gate` |
 | `title` | all | one line, shown in logs and the summary |
-| `brief` | build (required); review, reflect (optional extra guidance) | path relative to the repository root |
+| `brief` | build (required); review, reflect (optional extra guidance) | path relative to the repository root. A still-to-run build step's brief is stat'd at preflight and refused if it does not resolve to a file |
 | `of` | review (required) | the id of an EARLIER step |
 | `on_fail` | review | `record`, `rework` (default), `revert` |
-| `model`, `effort` | build, review, reflect | override the kind's default tier |
+| `model`, `effort` | build, review, reflect | override the kind's default tier. `effort` must be `low`, `medium` or `high` (its own, or `run.defaults.<kind>.effort`); a bad value is refused at load. `model` is not checked - the CLI's accepted values cannot be enumerated without drifting stale |
 | `expected_min` | **required on every build step still to run** | estimated minutes. The clock uses it to decline to START a step it cannot finish, and it is recorded beside the actual (section 14). An unsized build step refuses the whole plan at load |
-| `timeout_min` | any with a worker | hard kill; belongs at roughly 2.5x `expected_min`, never at the estimate |
+| `timeout_min` | any with a worker | hard kill; belongs at roughly 2.5x `expected_min`, never at the estimate. A still-to-run build step's `timeout_min` (its own, or `run.worker_timeout_min`) that cannot outlast its own `expected_min` is refused at load - such a step would fail every attempt regardless of what the worker does |
 | `budget_usd` | any with a worker | this step's own cap, overriding `run.budget_usd_per_step`. Must be a positive number; a bad value is refused at load, not at 2am |
 | `gates` | build, gate | this step's own gates, run before the universal ones |
 
@@ -1382,6 +1382,11 @@ not run over uncommitted work because its undo would destroy it.
 **"REFUSING TO START: universal gate fails before any step"** - the plan's
 `run.gates` do not pass on the tree as it stands. Fix the tree; a gate that fails
 before any worker ran is a broken plan.
+
+**"REFUSING TO START: path(s) named in the plan do not exist"** - a still-to-run
+build step's `brief`, or `run.preamble`, is a typo. Fix the path; every worker
+of the night would otherwise have been spawned on nothing but a preamble and a
+gate list.
 
 **"claude not found on PATH"** - the CLI is not installed or the shell that
 launched the runner does not have it. A PATH entry added this session is not

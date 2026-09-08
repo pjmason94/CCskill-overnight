@@ -20,6 +20,15 @@ appendix after that.
   diagnostic, F2b) landed 2026-09-08. So **F2's second layer and G-4 are fixed**;
   F2's first layer, the load-time refusal of a bad `effort` or budget, is phase 3
   and still stands.
+- **Phase 3** (F1, F2's first layer, A2) landed 2026-09-09. **F1, F2 and A2 are
+  fixed.** `preflight` now stats every still-to-run build step's `brief` and
+  `run.preamble` before doing anything else, and refuses with the full list of
+  missing paths. `load_spec` refuses a step's or `run.defaults.<kind>`'s
+  `effort` outside `low`/`medium`/`high`, and a non-positive
+  `run.budget_usd_per_step` - `model` stays unchecked, as the audit recommends.
+  `load_spec` also refuses a build step whose `timeout_min` (its own, or
+  `run.worker_timeout_min`) cannot outlast its own `expected_min`, collected
+  into one message the same way an unsized step is.
 
 Everything else stands.
 
