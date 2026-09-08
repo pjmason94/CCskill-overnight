@@ -2624,7 +2624,8 @@ class Runner:
         tier = self.tier(step, "diagnostic")
         brief = self.diagnostic_brief(step, step_dir)
         code, elapsed, result = self.run_worker(
-            self.worker_argv("diagnostic", tier), brief, step_dir / "diagnostic.log",
+            self.worker_argv("diagnostic", tier, budget=self.budget_for(step)), brief,
+            step_dir / "diagnostic.log",
             60 * float(self.run_cfg.get("diagnostic_timeout_min", 20)),
             f"[{step['id']}] diagnostic:", step["id"], "diagnostic")
         wrote = (step_dir / "remediation.md").exists()
@@ -2656,7 +2657,8 @@ class Runner:
             log_path.write_text(f"(dry run)\n\n=== BRIEF ===\n{brief}\n", encoding="utf-8")
             return {"outcome": "SKIPPED", "note": "dry run"}
         code, elapsed, result = self.run_worker(
-            self.worker_argv("review", tier, schema=REVIEW_SCHEMA), brief, log_path,
+            self.worker_argv("review", tier, schema=REVIEW_SCHEMA,
+                             budget=self.budget_for(step)), brief, log_path,
             60 * float(step.get("timeout_min", self.run_cfg.get("review_timeout_min", 30))),
             f"[{step['id']}]", step["id"], "review")
         # The reviewer is read-only; this is belt and braces for the case where it
@@ -2737,7 +2739,8 @@ class Runner:
                                                   encoding="utf-8")
             return {"outcome": "SKIPPED", "note": "dry run"}
         code, elapsed, result = self.run_worker(
-            self.worker_argv("reflect", tier, schema=REFLECT_SCHEMA), brief,
+            self.worker_argv("reflect", tier, schema=REFLECT_SCHEMA,
+                             budget=self.budget_for(step)), brief,
             step_dir / "reflect.log",
             60 * float(step.get("timeout_min", self.run_cfg.get("reflect_timeout_min", 30))),
             f"[{step['id']}]", step["id"], "reflect")
@@ -2834,7 +2837,7 @@ class Runner:
         step_dir = self.out / dir_name(step["id"])
         step_dir.mkdir(parents=True, exist_ok=True)
         with (step_dir / "gates.log").open("w", encoding="utf-8") as handle:
-            ok, failed, output = self.run_gates(step.get("gates") or [], handle)
+            ok, failed, output = self.run_gates(self.all_gates(step), handle)
         outcome = "PASS" if ok else "FAIL"
         self.log(f"[{step['id']}] gate step {outcome}" + (f" - {failed}" if failed else ""))
         return {"outcome": outcome, "note": failed}

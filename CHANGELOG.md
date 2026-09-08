@@ -181,6 +181,21 @@ rather than copied into each caller.
   `run.worker_timeout_min`) against its `expected_min` and refuses, naming
   every offending step, the same way an unsized step already does.
 
+- **`budget_usd` on a review, reflect or diagnostic step was silently
+  ignored.** `worker_argv` falls back to `run.budget_usd_per_step` when no
+  `budget=` is passed, and only the build path passed one. A planner who gave
+  a reflect step a larger cap than the builds, as the README already invited,
+  got the build cap and an `INCONCLUSIVE` or a `NO CHANGE` when it tripped.
+  `run_review`, `run_reflect` and `run_diagnostic` now pass
+  `budget=self.budget_for(step)`, matching the build path.
+
+- **A `kind: gate` checkpoint never ran the universal gates.** `run_gate_step`
+  ran only the step's own `gates`; `all_gates` (step's own plus `run.gates`)
+  already existed and every build step uses it. Since `1.0.3` the planner is
+  told to put the full suite in a `kind: gate` checkpoint, so a project whose
+  lint or hygiene check lived in `run.gates` got none of it there, despite the
+  README saying it does. `run_gate_step` now uses `all_gates` too.
+
 - Wording, all found by the same audit: the composed brief's order omitted the
   tool-usage note that sits between the header and the brief; `--progress` and
   `--run` were missing from the flag table; the layout diagram omitted

@@ -29,6 +29,16 @@ appendix after that.
   `load_spec` also refuses a build step whose `timeout_min` (its own, or
   `run.worker_timeout_min`) cannot outlast its own `expected_min`, collected
   into one message the same way an unsized step is.
+- **Phase 4a** (F3) landed 2026-09-09. **F3 is fixed.** `run_review`,
+  `run_reflect` and `run_diagnostic` now pass `budget=self.budget_for(step)`
+  to `worker_argv`, matching the build path - a step's own `budget_usd`
+  reaches its worker instead of the run-level cap applying silently.
+- **Phase 4b** (F4, T3) landed 2026-09-09. **F4 is fixed.** `run_gate_step`
+  now runs `self.all_gates(step)` instead of the step's own `gates` alone, so
+  a `kind: gate` checkpoint runs the universal gates too, matching what the
+  README already said. T3 (new section 26) proves the defect first: a
+  universal gate that could not itself fail preflight was invisible in a
+  checkpoint's `gates.log` before the fix and present after it.
 
 Everything else stands.
 

@@ -1791,6 +1791,27 @@ def section_21(c):
     check("...on the first attempt, with nothing redone",
           entry.get("attempts") == 1, str(entry))
 
+    # F3: `budget_usd` on a REVIEW step must reach ITS OWN worker too -
+    # `worker_argv` otherwise fell back silently to the run-level cap for
+    # review, reflect and diagnostic, so a planner who gave one of them a
+    # larger cap than the builds (as the README invites) got the build cap
+    # instead.
+    review_budget = SPEC.replace(
+        "  - id: review:s1\n    kind: review\n    of: s1\n    on_fail: rework\n",
+        "  - id: review:s1\n    kind: review\n    of: s1\n    on_fail: rework\n"
+        "    budget_usd: 3\n")
+    where = make_repo(root / "review-budget")
+    (where / "overnight" / "steps.yaml").write_text(review_budget, encoding="utf-8")
+    sh(where, "git", "add", "-A")
+    sh(where, "git", "commit", "-q", "-m", "review budget spec")
+    scen = root / "scenario-review-budget.json"
+    scen.write_text(json.dumps({"s1": ["pass"]}), encoding="utf-8")
+    done = run_runner(where, scen)
+    review_log = (where / "overnight" / "runs" / "selftest" / "review-s1"
+                 / "review.log").read_text(encoding="utf-8")[:2000]
+    check("a review step's own budget_usd is what reaches --max-budget-usd",
+          "--max-budget-usd 3" in review_log, review_log[:300])
+
 
 
 def section_22(c):
@@ -2382,6 +2403,57 @@ def section_25(c):
           entries.get("s1", {}).get("outcome") == "NOT RUN", str(entries.get("s1")))
 
 
+# T3 / F4: a `kind: gate` checkpoint must run the UNIVERSAL gates too, not
+# just its own - `run_gate_step` used to run `step.get("gates")` alone, so a
+# project whose lint or hygiene check lives in `run.gates` got none of it at
+# a checkpoint, despite the README saying it does. Both gates pass (a
+# universal gate that FAILS would trip at preflight, before any step, and
+# never isolate this from that separate refusal) - the defect is that the
+# universal one used to never run at all, which shows up in the LOG, not the
+# outcome.
+GATE_SPEC = """\
+run:
+  name: gatestep
+  hours: 1
+  attempts: 1
+  worker_timeout_min: 20
+  preamble: overnight/briefs/_preamble.md
+  gates:
+    - {name: universal-marker, cmd: python -c "import sys; sys.exit(0)"}
+steps:
+  - id: g1
+    kind: gate
+    title: a checkpoint with its own passing gate
+    gates:
+      - {name: own-marker, cmd: python -c "import sys; sys.exit(0)"}
+"""
+
+
+def section_26(c):
+    root = c.root
+    check = c.check
+
+    print("26. a `kind: gate` checkpoint runs the universal gates too")
+    where = make_repo(root / "gatestep")
+    (where / "overnight" / "steps.yaml").write_text(GATE_SPEC, encoding="utf-8")
+    sh(where, "git", "add", "-A")
+    sh(where, "git", "commit", "-q", "-m", "gate spec")
+    scen = root / "scenario-gatestep.json"
+    scen.write_text("{}", encoding="utf-8")
+    done = run_runner(where, scen)
+    entry = ledger(where).get("g1", {})
+    check("a gate step with its own passing gate is a PASS",
+          entry.get("outcome") == "PASS", str(entry))
+    gate_log = (where / "overnight" / "runs" / "gatestep" / "g1" / "gates.log").read_text(
+        encoding="utf-8")
+    check("the step's own gate ran", "own-marker" in gate_log, gate_log[-500:])
+    check("...and the universal gate ran too, not just this step's own",
+          "universal-marker" in gate_log, gate_log[-500:])
+    check("...the step's own gate first, the universal one after",
+          gate_log.index("own-marker") < gate_log.index("universal-marker"),
+          gate_log[-500:])
+
+
 SECTIONS = [
     # key   needs        checks  function
     ("1",   (),          70,   section_1_3,
@@ -2403,11 +2475,12 @@ SECTIONS = [
     ("18",  (),          6,   section_18, "work stranded on a scratch branch"),
     ("19",  (),          5,   section_19, "a re-woken worker is counted once"),
     ("20",  (),          9,   section_20, "a stalled worker is killed"),
-    ("21",  (),          13,   section_21, "the per-step budget"),
+    ("21",  (),          14,   section_21, "the per-step budget"),
     ("22",  (),          17,   section_22, "a cut-off worker is continued"),
     ("23",  (),          12,   section_23, "stranded work is retested, not discarded"),
     ("24",  (),          20,   section_24, "the clock: --until, and the stop it enforces"),
     ("25",  (),          30,   section_25, "expected_min is required, and it schedules"),
+    ("26",  (),          4,   section_26, "a `kind: gate` checkpoint runs the universal gates"),
 ]
 
 TOTAL_CHECKS = sum(s[2] for s in SECTIONS)
