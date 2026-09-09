@@ -118,7 +118,21 @@ def git_as_stranger(repo, *args):
     subprocess.run(["git", *args], cwd=repo, check=False, capture_output=True, env=env)
 
 
+# Must match STRIP_ENV in overnight.py. A real `claude` invocation would read
+# any of these from its environment - an inherited API key bills the API
+# account instead of the subscription, an inherited effort or model silently
+# overrides what the runner asked for - so a worker seeing one here means
+# `child_env` failed to strip it. Exit 99, not 1: a barren-looking exit here
+# would read as a usage wall or a bad tier, not as what it actually is.
+STRIP_ENV = ("ANTHROPIC_API_KEY", "CLAUDE_EFFORT", "CLAUDE_CODE_SUBAGENT_MODEL")
+
+
 def main():
+    leaked = [name for name in STRIP_ENV if name in os.environ]
+    if leaked:
+        sys.stderr.write(f"fake worker: {', '.join(leaked)} present in the child"
+                         " environment - child_env() failed to strip it\n")
+        sys.exit(99)
     brief = sys.stdin.read()
     step = os.environ.get("OVERNIGHT_STEP_ID", "?")
     kind = os.environ.get("OVERNIGHT_STEP_KIND", "build")

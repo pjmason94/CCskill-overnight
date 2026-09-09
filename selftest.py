@@ -77,6 +77,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 from pathlib import Path
 
 import yaml
@@ -2495,6 +2496,290 @@ def section_27(c):
           done.returncode != 0, str(done.returncode))
 
 
+# T1: STRIP_ENV keeps a real API key and an inherited effort out of every
+# worker - the only untested finding that costs money rather than time (an
+# inherited ANTHROPIC_API_KEY bills the API account instead of the
+# subscription; an inherited CLAUDE_EFFORT silently overrides the runner's
+# own --effort). fake_worker.py now exits 99 if any STRIP_ENV name reaches it,
+# so this proves child_env() actually strips them rather than merely
+# asserting the runner didn't crash.
+def section_28(c):
+    root = c.root
+    check = c.check
+
+    print("28. STRIP_ENV keeps a real API key and effort out of every worker")
+    where = make_repo(root / "stripenv")
+    scen = root / "scenario-stripenv.json"
+    scen.write_text(json.dumps({"s1": ["pass"]}), encoding="utf-8")
+    env = dict(os.environ)
+    env["ANTHROPIC_API_KEY"] = "sk-leaked-for-real"
+    env["CLAUDE_EFFORT"] = "high"
+    env["CLAUDE_CODE_SUBAGENT_MODEL"] = "opus"
+    env["OVERNIGHT_FAKE_SCENARIO"] = str(scen)
+    env["PYTHONIOENCODING"] = "utf-8"
+    done = subprocess.run(
+        [sys.executable, "-u", str(RUNNER), "--spec", "overnight/steps.yaml",
+         "--fake-worker", str(FAKE), "--only", "s1"],
+        cwd=where, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    entry = ledger(where).get("s1", {})
+    check("a real ANTHROPIC_API_KEY, CLAUDE_EFFORT and"
+          " CLAUDE_CODE_SUBAGENT_MODEL in the launching shell never reach the"
+          " worker", entry.get("outcome") == "PASS", str(entry))
+    check("...the run doesn't merely survive - nothing in the log even hints"
+          " at a leak", "STRIP_ENV" not in done.stdout and "child_env" not in done.stdout,
+          done.stdout[-300:])
+
+
+# T2: `on_fail: record` and `on_fail: revert`. Only `on_fail: rework` (the
+# default) appeared in any fixture before this - a wrong revert resets the
+# operator's branch, and `record` spawning a rework anyway would spend opus
+# it was told not to.
+def section_29(c):
+    root = c.root
+    check = c.check
+
+    print("29. on_fail: record and on_fail: revert")
+
+    # -- record: write verdict.json and move on, no rework spawned ----------
+    record_spec = SPEC.replace(
+        "  - id: review:s1\n    kind: review\n    of: s1\n    on_fail: rework\n",
+        "  - id: review:s1\n    kind: review\n    of: s1\n    on_fail: record\n")
+    where = make_repo(root / "record")
+    (where / "overnight" / "steps.yaml").write_text(record_spec, encoding="utf-8")
+    sh(where, "git", "add", "-A")
+    sh(where, "git", "commit", "-q", "-m", "record spec", check=False)
+    scen = root / "scenario-record.json"
+    scen.write_text(json.dumps({"s1": ["pass"], "review:s1": ["review:rework"]}),
+                    encoding="utf-8")
+    done = run_runner(where, scen, "--only", "s1,review:s1")
+    entries = ledger(where)
+    check("on_fail: record leaves the verdict as REVIEW <VERDICT>, not a"
+          " rework outcome",
+          entries.get("review:s1", {}).get("outcome") == "REVIEW REWORK",
+          str(entries.get("review:s1")))
+    check("...and the reviewed step itself is untouched - still PASS",
+          entries.get("s1", {}).get("outcome") == "PASS", str(entries.get("s1")))
+    check("...and no rework worker was ever spawned",
+          not (where / "overnight" / "runs" / "selftest" / "s1" / "rework.log").exists())
+    check("verdict.json is still written",
+          (where / "overnight" / "runs" / "selftest" / "review-s1"
+           / "verdict.json").exists())
+
+    # -- revert: reset to the commit before the reviewed one ----------------
+    revert_spec = SPEC.replace(
+        "  - id: review:s1\n    kind: review\n    of: s1\n    on_fail: rework\n",
+        "  - id: review:s1\n    kind: review\n    of: s1\n    on_fail: revert\n")
+    where = make_repo(root / "revert")
+    (where / "overnight" / "steps.yaml").write_text(revert_spec, encoding="utf-8")
+    sh(where, "git", "add", "-A")
+    sh(where, "git", "commit", "-q", "-m", "revert spec", check=False)
+    scen = root / "scenario-revert.json"
+    scen.write_text(json.dumps({"s1": ["pass"], "review:s1": ["review:fail"]}),
+                    encoding="utf-8")
+    done = run_runner(where, scen, "--only", "s1,review:s1")
+    entries = ledger(where)
+    check("on_fail: revert marks the reviewed step REVERTED BY REVIEW",
+          entries.get("s1", {}).get("outcome") == "REVERTED BY REVIEW",
+          str(entries.get("s1")))
+    check("...and the review's own note says it reverted the commit",
+          "reverted" in str(entries.get("review:s1", {}).get("note", "")),
+          str(entries.get("review:s1")))
+    check("...and the reviewed commit's file is actually gone from the tree",
+          not (where / "tests" / "test_s1.py").exists())
+
+
+# T4: `cmd_empty` and `fresh_shell` gate forms. Neither string appeared in any
+# fixture before this - a gate that silently passes on output it should fail
+# on is worse than no gate at all.
+GATES_T4_SPEC = """\
+run:
+  name: t4gates
+  hours: 1
+  attempts: 1
+  worker_timeout_min: 20
+  preamble: overnight/briefs/_preamble.md
+steps:
+  - id: g1
+    kind: gate
+    title: cmd_empty and fresh_shell, both passing
+    gates:
+      - {name: empty-ok, cmd_empty: python -c "pass"}
+      - {name: fresh-ok, fresh_shell: python -c "import sys; sys.exit(0)"}
+  - id: g2
+    kind: gate
+    title: cmd_empty that prints something
+    gates:
+      - {name: empty-bad, cmd_empty: python -c "print(1)"}
+  - id: g3
+    kind: gate
+    title: fresh_shell that exits non-zero
+    gates:
+      - {name: fresh-bad, fresh_shell: python -c "import sys; sys.exit(1)"}
+"""
+
+
+def section_30(c):
+    root = c.root
+    check = c.check
+
+    print("30. the cmd_empty and fresh_shell gate forms")
+    where = make_repo(root / "t4gates")
+    (where / "overnight" / "steps.yaml").write_text(GATES_T4_SPEC, encoding="utf-8")
+    sh(where, "git", "add", "-A")
+    sh(where, "git", "commit", "-q", "-m", "t4 gates spec", check=False)
+    scen = root / "scenario-t4gates.json"
+    scen.write_text("{}", encoding="utf-8")
+    done = run_runner(where, scen)
+    entries = ledger(where)
+    check("cmd_empty passing (exit 0, no output) and fresh_shell passing"
+          " (exit 0 in a new shell) both PASS",
+          entries.get("g1", {}).get("outcome") == "PASS", str(entries.get("g1")))
+    check("cmd_empty exit 0 but with output on stdout FAILS",
+          entries.get("g2", {}).get("outcome") == "FAIL"
+          and "empty-bad" in str(entries.get("g2", {}).get("note")),
+          str(entries.get("g2")))
+    check("fresh_shell exit non-zero FAILS",
+          entries.get("g3", {}).get("outcome") == "FAIL"
+          and "fresh-bad" in str(entries.get("g3", {}).get("note")),
+          str(entries.get("g3")))
+
+
+# T6: `--rerun` re-runs steps already recorded PASS. Untested before this - a
+# flag that silently does nothing is the kind of defect nobody notices until
+# the morning it was needed.
+def section_31(c):
+    root = c.root
+    check = c.check
+
+    print("31. --rerun re-runs steps already recorded PASS")
+    where = make_repo(root / "rerun")
+    scen = root / "scenario-rerun.json"
+    scen.write_text(json.dumps({"s1": ["pass", "pass"]}), encoding="utf-8")
+    run_runner(where, scen, "--only", "s1")
+    entries = ledger(where)
+    check("the first launch records s1 PASS",
+          entries.get("s1", {}).get("outcome") == "PASS", str(entries.get("s1")))
+    counters_path = where / "overnight" / "runs" / "selftest" / "_fake_counters.json"
+    counters = json.loads(counters_path.read_text(encoding="utf-8"))
+    check("...having spawned exactly one worker for it",
+          counters.get("s1") == 1, str(counters))
+
+    plain = run_runner(where, scen, "--only", "s1")
+    counters = json.loads(counters_path.read_text(encoding="utf-8"))
+    check("a plain relaunch of a PASSed step spawns nothing more",
+          counters.get("s1") == 1, str(counters))
+
+    done = run_runner(where, scen, "--only", "s1", "--rerun")
+    check("--rerun overrides that and the run still succeeds",
+          done.returncode == 0, done.stdout[-300:])
+    counters = json.loads(counters_path.read_text(encoding="utf-8"))
+    check("...spawning a SECOND worker for the already-passed step",
+          counters.get("s1") == 2, str(counters))
+
+
+# Proxy-coverage upgrade: a RUNNING step spans the stop time. The clock is
+# checked at the top of the main loop only, so structurally a step already in
+# flight cannot be interrupted - but nothing asserted that before this. Also
+# proves the flip side: once the stop time has passed, the NEXT step is not
+# started. No universal gates here (SPEC's `python -m pytest -q` suite gate
+# alone eats seconds of preflight, which swallowed the whole window on the
+# first attempt at this fixture) - the expected_min figures are minutes, not
+# a claim about the real runtime below, which is what slow-but-alive proves.
+SPANS_CLOCK_SPEC = """\
+run:
+  name: spans-clock
+  hours: 1
+  attempts: 1
+  worker_timeout_min: 20
+  isolation: in-place
+  preamble: overnight/briefs/_preamble.md
+steps:
+  - id: s1
+    kind: build
+    title: legitimately slow, spans the stop time
+    brief: overnight/briefs/s1.md
+    expected_min: 0.01
+    gates:
+      - cmd: python -m pytest -q tests/test_s1.py
+  - id: s2
+    kind: build
+    title: must not start once the clock has passed
+    brief: overnight/briefs/s2.md
+    expected_min: 0.01
+    gates:
+      - cmd: python -m pytest -q tests/test_s2.py
+"""
+
+
+def section_32(c):
+    root = c.root
+    check = c.check
+
+    print("32. a running step spans the stop time; nothing interrupts it mid-step")
+    where = make_repo(root / "spans-clock")
+    (where / "overnight" / "steps.yaml").write_text(SPANS_CLOCK_SPEC, encoding="utf-8")
+    sh(where, "git", "add", "-A")
+    sh(where, "git", "commit", "-q", "-m", "spans clock spec", check=False)
+    scen = root / "scenario-spans-clock.json"
+    scen.write_text(json.dumps({"s1": ["slow-but-alive"], "s2": ["pass"]}), encoding="utf-8")
+    # slow-but-alive sleeps ~4.8s before passing; the stop time (~3.6s from
+    # launch) elapses while s1 is still running.
+    done = run_runner(where, scen, "--only", "s1,s2", "--hours", "0.001")
+    entries = ledger(where)
+    check("a step already running when the stop time passes still finishes and PASSes",
+          entries.get("s1", {}).get("outcome") == "PASS", str(entries.get("s1")))
+    check("...and the NEXT step is not started once the clock has passed",
+          "s2" not in entries, str(entries.get("s2")))
+    check("...and the log says why, naming the clock",
+          "no step was started after the stop time" in done.stdout, done.stdout[-400:])
+
+
+# Proxy-coverage upgrade: OVER BUDGET's documented exit code (1) was never
+# asserted - only the outcome string was.
+def section_33(c):
+    root = c.root
+    check = c.check
+
+    print("33. OVER BUDGET's exit code is 1, not just its outcome string")
+    where = make_repo(root / "budget-exit")
+    (where / "overnight" / "steps.yaml").write_text(BUDGET_SPEC, encoding="utf-8")
+    sh(where, "git", "add", "-A")
+    sh(where, "git", "commit", "-q", "-m", "budget exit spec", check=False)
+    scen = root / "scenario-budget-exit.json"
+    scen.write_text(json.dumps({"s1": ["over-budget", "pass"]}), encoding="utf-8")
+    done = run_runner(where, scen)
+    entries = ledger(where)
+    check("the step is recorded OVER BUDGET",
+          entries.get("s1", {}).get("outcome") == "OVER BUDGET", str(entries.get("s1")))
+    check("...and the run's own exit code is 1, as README.md documents",
+          done.returncode == 1, str(done.returncode))
+
+
+# Proxy-coverage upgrade: "a review runs when the clock is tight" was only
+# ever exercised via a build that never ran (so its review was SKIPPED, not
+# run). `choose()` (overnight.py) never checks a review's `expected_min` -
+# it does not have one - against the time left; this calls it directly with
+# the stop time an hour in the PAST to prove a review is returned regardless,
+# rather than relying on timing a real subprocess.
+def section_34(c):
+    check = c.check
+
+    print("34. choose() never declines a review for the clock")
+    from overnight import Runner
+    mock = types.SimpleNamespace(stop_at=time.time() - 3600)
+    review_step = {"id": "review:s1", "kind": "review"}
+    result = Runner.choose(mock, [review_step], {})
+    check("a review is returned even with the stop time an hour in the past",
+          result is review_step, str(result))
+
+    build_step = {"id": "s1", "kind": "build", "expected_min": 999999}
+    mock2 = types.SimpleNamespace(stop_at=time.time() + 3600, reordered=[], log=lambda *a: None,
+                                  record=lambda *a, **k: None, _ran_this_session=set())
+    result2 = Runner.choose(mock2, [build_step], {})
+    check("...while an oversized BUILD step in the same position is declined",
+          result2 is None, str(result2))
+
+
 SECTIONS = [
     # key   needs        checks  function
     ("1",   (),          70,   section_1_3,
@@ -2523,6 +2808,13 @@ SECTIONS = [
     ("25",  (),          30,   section_25, "expected_min is required, and it schedules"),
     ("26",  (),          4,   section_26, "a `kind: gate` checkpoint runs the universal gates"),
     ("27",  (),          5,   section_27, "REVIEW REWORK FAILED is blocking, not resumed"),
+    ("28",  (),          2,   section_28, "STRIP_ENV keeps a leaked key and effort out"),
+    ("29",  (),          7,   section_29, "on_fail: record and on_fail: revert"),
+    ("30",  (),          3,   section_30, "the cmd_empty and fresh_shell gate forms"),
+    ("31",  (),          5,   section_31, "--rerun re-runs steps already recorded PASS"),
+    ("32",  (),          3,   section_32, "a running step spans the stop time"),
+    ("33",  (),          2,   section_33, "OVER BUDGET's exit code"),
+    ("34",  (),          2,   section_34, "choose() never declines a review for the clock"),
 ]
 
 TOTAL_CHECKS = sum(s[2] for s in SECTIONS)

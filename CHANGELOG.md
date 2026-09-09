@@ -210,6 +210,18 @@ rather than copied into each caller.
   that already failed once should not spend another opus pass on the same
   verdict without a person deciding the findings still matter first.
 
+- **Test coverage for six documented-but-untested paths, plus three proxy
+  checks upgraded to real ones.** No behaviour changed. `fake_worker.py` now
+  exits 99 if a real `ANTHROPIC_API_KEY`, `CLAUDE_EFFORT` or
+  `CLAUDE_CODE_SUBAGENT_MODEL` reaches it, guarding the one untested finding
+  that costs money rather than time; `on_fail: record` and `on_fail: revert`,
+  the `cmd_empty` and `fresh_shell` gate forms, and `--rerun` each get a
+  fixture. A step already running when the stop time passes is proven to
+  finish rather than being interrupted; `OVER BUDGET`'s documented exit code
+  (1) is now asserted, not just its outcome string; and `choose()` never
+  declining a review for the clock is proven directly rather than through a
+  build that never got the chance to reach it.
+
 - Wording, all found by the same audit: the composed brief's order omitted the
   tool-usage note that sits between the header and the brief; `--progress` and
   `--run` were missing from the flag table; the layout diagram omitted

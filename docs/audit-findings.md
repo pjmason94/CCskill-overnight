@@ -63,6 +63,20 @@ appendix after that.
   from scratch, while the blocking review step still names the OLD sha. Not
   investigated further; flagged for Paul's judgement on whether it is worth a
   fix and what shape one would take.
+- **Phase 5** (T1, T2, T4, T6, and the three proxy-coverage upgrades) landed
+  2026-09-09. Changes no behaviour; adds coverage only. T1: `fake_worker.py`
+  exits 99 if any `STRIP_ENV` name reaches it (new section 28). T2: `on_fail:
+  record` and `on_fail: revert` each get a fixture (new section 29). T4:
+  `cmd_empty` and `fresh_shell` gate forms, both passing and failing (new
+  section 30). T6: `--rerun` actually spawns a second worker for an
+  already-PASSed step, proven via the fake worker's own call counter, not
+  just a benign exit code (new section 31). The three proxy upgrades: a
+  RUNNING step spans the stop time and the step after it is not started (new
+  section 32 - needed its own lightweight spec, since `SPEC`'s universal
+  `python -m pytest -q` gate alone ate the whole timing window on the first
+  attempt); `OVER BUDGET`'s exit code is 1 (new section 33); `choose()` never
+  declines a review for the clock, called directly with the stop time an hour
+  in the past rather than timed through a subprocess (new section 34).
 
 Everything else stands.
 
