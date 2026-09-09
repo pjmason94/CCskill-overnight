@@ -1001,25 +1001,39 @@ table - step, kind, outcome, minutes, estimate with the actual-to-estimate ratio
 (marked **over** past 1.5x), note - and the cumulative worker cost; then what to
 read next.
 
-The cost line is followed by **the split between building and not building**:
+The cost line is followed by the three efficiency objectives (`CLAUDE.md`),
+each computed from the ledger and logs the run already wrote - nothing here
+gates a plan or fails a run, all three are reported and watched:
 
     Cumulative worker cost over every step this plan has run, not just this session (self-reported): $18.40
-    Of that, **$4.85 (26%) was not building**: review and reflect steps, and the rework they ordered. Build steps $13.55, of which 2 needed more than one attempt and 1 was reworked after a review - that spend is inside the build figure, because the ledger keeps one cost per step.
 
-The efficiency bar this project holds itself to (see `docs/token-efficiency.md`)
-is not about what a single API call costs - headless workers cost the same per
-call as an interactive session. It is structural: review, reflect, rework and
-discarded attempts were 26% of the first real run. So it is reported every
-morning rather than asserted in a document.
+    **Waste: $4.85 (26% of spend, OVER the 20% ceiling)** - STUCK, HALTED, OVER BUDGET, BARREN, an inconclusive review or reflect, a reverted step, a rework that failed. Judgement (review, reflect, diagnostic that did its job): $2.10. Landed (build steps on the branch): $11.45, of which 2 needed more than one attempt and 1 was reworked after a review - that spend is inside the landed figure, because the ledger keeps one cost per step. A breach is reported and monitored, never gated.
 
-Read the two halves differently. The **kind split is exact** - a review or a
-reflect is a whole step with its own ledger entry, and a rework's cost is moved
-onto the review that ordered it. The **retried and reworked counts are
-indicative**: the ledger keeps one cost per step, so a build step's discarded
-attempts are inside its own figure and cannot be separated from the attempt that
-finally worked. A high overhead share is not automatically bad - a review that
-catches a real bug has earned its money - but a run where half the spend is not
-building is one whose plan is asking the wrong questions.
+    The night was filled: neither under-cut nor over-cut by either signal.
+
+    Every step's call count sat in band (15-80 calls, floor at 20-55).
+
+**Waste** is spend where nothing usable resulted and nothing was learned - the
+**kind split is exact** for judgement (a review or reflect is a whole step
+with its own ledger entry, and a failed rework's cost is moved onto the
+review that ordered it), but the **retried and reworked counts folded into
+landed are indicative only**: the ledger keeps one cost per step, so a build
+step's discarded attempts are inside its own figure and cannot be separated
+from the attempt that finally worked. A high waste share is not automatically
+bad on one run - a review that catches a real bug has earned its money - the
+20% ceiling exists to catch a run wasting *structurally*, over several
+nights.
+
+**The night filled** reports two deterministic signals: the queue finishing
+more than an hour before the stop time (under-cut - there was room for more),
+and any step `NOT RUN` because the clock declined to start it (over-cut, or
+badly ordered) - as opposed to a `NOT RUN` the usage wall produced, which is
+the environment's fault, not the plan's.
+
+**Step size** flags a PASSed build step whose worker(s) made fewer than 15 or
+more than 80 API calls in total, counted straight from its own logs - cost per
+call is dear at both ends and cheapest around 20-55 calls, the 7-15 minute
+step (`docs/token-efficiency.md` has the measurement).
 
 ### `discarded-commits.md`
 

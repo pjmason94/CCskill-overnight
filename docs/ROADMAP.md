@@ -217,7 +217,12 @@ run overshoots the deadline it was given.
 
 `docs/token-efficiency.md` measured where an overnight run's tokens go, and found
 that headless workers cost the same per API call as an interactive session - so
-the 2x risk is structural, not per-call. Three things follow from it, none built:
+the 2x risk is structural, not per-call. **The 2x-vs-interactive bar itself was
+retired 2026-09-09** (audit section F): measured, it was met with room to
+spare and it measured the wrong thing, so `CLAUDE.md` now states three
+objectives instead - a bounded waste share, a filled night, and each step
+sized to the floor of the cost curve - which is what item 3 below reports.
+Three things follow from the original measurement, none built:
 
 1. ~~**Bound what a tool result leaves behind.**~~ DONE. `TOOL_USAGE_NOTE` now
    tells every worker kind that a tool result is paid for on arrival and again on
@@ -232,12 +237,16 @@ the 2x risk is structural, not per-call. Three things follow from it, none built
    worker kind, merged into the single `--disallowedTools` the review step was
    already using. Safety first - none of them is reachable by the git undo; the
    ~4% token saving is a bonus.
-3. ~~**Report the structural overhead per run.**~~ DONE. `overhead_line()` splits
-   `SUMMARY.md`'s total into building and not-building, with counts of the build
-   steps that were retried or reworked. Doing it surfaced a defect: a rework's
-   cost never reached the ledger at all, so every run to date has under-reported
-   itself by whatever its reworks cost. Fixed, and guarded by the invariant
-   (ledger total == what the logs say the workers spent).
+3. ~~**Report the structural overhead per run.**~~ DONE, and superseded
+   2026-09-09 by the three-objective report `SUMMARY.md` now carries:
+   `waste_share_line()` (a bounded waste share - STUCK, BARREN, a failed
+   rework, a reverted step, an inconclusive review or reflect - against
+   judgement and landed spend), `night_filled_line()` (under-cut if the queue
+   finished over an hour early, over-cut if the clock declined to start a
+   step), and `step_size_line()` (a build step outside 15-80 API calls,
+   counted straight from its own logs). The original `overhead_line()`'s
+   defect - a rework's cost never reaching the ledger at all - stays fixed;
+   its building/not-building split is now the landed/judgement/waste one.
 
 The subagent question is deliberately NOT on this list as a change: a subagent
 pays its own prefix and does the same reading, so it only saves what the reading

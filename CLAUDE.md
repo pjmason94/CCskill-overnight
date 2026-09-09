@@ -83,11 +83,31 @@ Plus **PROGRESS** (`references/progress.md`) over a run's own files, and HELP.
 
 ## The efficiency objective
 
-An unattended run must not be significantly more token-hungry than doing the
-same work in an interactive session. Some overhead for running unsupervised is
-fine - a brief, a gate, a review - but spending 2x the tokens is not, and any
-change to the runner or the briefs is judged against that bar, not against
-whether it is tidy.
+Three objectives, in this order of importance, each computed by the runner
+from the ledger and logs it already keeps - agreed 2026-09-08, replacing the
+old "not significantly more token-hungry than interactive, 2x not acceptable"
+bar (retired to a footnote in `docs/token-efficiency.md`: measured, it was
+met with room to spare, and it measured the wrong thing - the three ways a
+night actually fails sit outside any per-call number):
+
+1. **Waste share of spend is bounded.** Split cost into *landed* (a build
+   step whose commit is on the branch), *judgement* (review, reflect,
+   diagnostic that did its job, even on a negative verdict - the deliberate
+   price of running unsupervised, not waste), and *waste* (STUCK, HALTED,
+   OVER BUDGET, BARREN, an inconclusive review or reflect, a reverted step, a
+   rework that failed). The ceiling is **20% of spend**. A breach is reported
+   in `SUMMARY.md` and watched across runs - it never fails a run, refuses a
+   plan or gates anything, because an unsupervised run at some waste still
+   beats an unattended alternative that ran nobody at all.
+2. **The night is filled.** The queue finishing more than an hour before the
+   stop time is under-cut; any step `NOT RUN` because the clock declined to
+   start it is over-cut, or badly ordered. The objective is zero of either,
+   and `SUMMARY.md` says which, and by how much.
+3. **Each step sits on the floor of the U.** Cost per API call is dear at
+   both ends of a step's call count (a cold start under ~15 calls, context
+   grown past ~80) and cheapest around 20-55 calls - the 7-15 minute step. A
+   step outside 15-80 is flagged in `SUMMARY.md` as mis-cut in the direction
+   it missed.
 
 Measure, do not assume. `python tools/tally.py <run dir or transcript>` splits
 a session's spend into its buckets (context re-read per call, cache writes,

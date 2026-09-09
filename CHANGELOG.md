@@ -222,6 +222,27 @@ rather than copied into each caller.
   declining a review for the clock is proven directly rather than through a
   build that never got the chance to reach it.
 
+- **The efficiency objective is now three things, not one, and `SUMMARY.md`
+  reports all three.** The old bar - an unattended run must not be
+  significantly more token-hungry than the same work done interactively, 2x
+  not acceptable - is retired to a footnote in `docs/token-efficiency.md`
+  carrying its measurement: it was met with room to spare (headless costs
+  what interactive costs per call, and about half per call against a long
+  interactive session), and it measured the wrong thing - the three ways a
+  night actually fails (the plan running out, a step mis-cut, work spent and
+  not landed) all sit outside a per-call number. `CLAUDE.md` now states, in
+  order: **(1) waste share of spend is bounded** at 20% - split into landed
+  (a build step whose commit is on the branch), judgement (a review, reflect
+  or diagnostic that did its job, even on a negative verdict), and waste
+  (STUCK, HALTED, OVER BUDGET, BARREN, an inconclusive review or reflect, a
+  reverted step, a failed rework) - reported and monitored, never gating a
+  run; **(2) the night is filled** - the queue finishing over an hour before
+  the stop time is under-cut, any step `NOT RUN` because the clock declined
+  it is over-cut; **(3) each step sits on the floor of the U** - a build step
+  outside 15-80 API calls (counted from its own logs) is flagged as mis-cut
+  in the direction it missed. `overhead_line()`'s building/not-building split
+  is replaced by these three lines.
+
 - Wording, all found by the same audit: the composed brief's order omitted the
   tool-usage note that sits between the header and the brief; `--progress` and
   `--run` were missing from the flag table; the layout diagram omitted

@@ -769,9 +769,10 @@ def section_1_3(c):
           abs(ledgered - spent) < 0.005 and spent > 0,
           f"ledger ${ledgered:.2f} vs logs ${spent:.2f}")
     # ...and the morning gets the split, because the efficiency bar is about
-    # structure - review, reflect and rework - not about per-call cost.
-    check("SUMMARY.md splits out what was not building",
-          "was not building" in summary and "reworked after a review" in summary,
+    # structure - landed, judgement and waste - not about per-call cost.
+    check("SUMMARY.md splits spend into landed, judgement and waste",
+          "Landed (build steps on the branch)" in summary
+          and "reworked after a review" in summary,
           summary[-400:])
 
     print("3. resume skips passed steps")
@@ -2780,6 +2781,111 @@ def section_34(c):
           result2 is None, str(result2))
 
 
+# Phase 6 (the efficiency objective, section F of docs/audit-findings.md):
+# three SUMMARY.md lines, each a pure function of self.spec/self.out - tested
+# directly against a mock Runner rather than through a live run, since the
+# fake worker's logs carry no per-call usage records at all (tally.py's
+# convention needs a real worker's log to mean anything; the fake harness
+# writes one assistant+usage pair per SESSION only for pass-rewoken, to keep
+# every other fixture simple) and the three-way outcome split is cheaper and
+# more deterministic to prove directly than to orchestrate through a run.
+def section_35(c):
+    check = c.check
+    from overnight import Runner
+
+    print("35. waste_share_line splits spend into landed, judgement and waste")
+    mock = types.SimpleNamespace(spec={"steps": [
+        {"id": "s1", "kind": "build", "done": {"outcome": "PASS", "cost_usd": 6.0,
+                                               "attempts": 2}},
+        {"id": "s2", "kind": "build", "done": {"outcome": "STUCK", "cost_usd": 3.0}},
+        {"id": "review:s1", "kind": "review", "done": {"outcome": "REVIEW PASS",
+                                                       "cost_usd": 1.0}},
+    ]})
+    line = Runner.waste_share_line(mock)
+    check("landed sums PASSed build steps' cost",
+          "Landed (build steps on the branch): $6.00" in line, line)
+    check("judgement sums the review's cost",
+          "Judgement" in line and "$1.00" in line, line)
+    check("waste sums the STUCK step's cost, at the right percentage of $10 total",
+          "Waste: $3.00 (30%" in line, line)
+    check("30% is reported as over the 20% ceiling",
+          "OVER the 20% ceiling" in line, line)
+    check("a retried build step is counted",
+          "1 needed more than one attempt" in line, line)
+
+    # THE WIRING, not just the pure function: a real run's SUMMARY.md must
+    # actually carry this line, not just the method existing unused.
+    root = c.root
+    where = make_repo(root / "waste-wiring")
+    scen = root / "scenario-waste-wiring.json"
+    scen.write_text(json.dumps({"s1": ["pass"]}), encoding="utf-8")
+    run_runner(where, scen, "--only", "s1")
+    summary = (where / "overnight" / "runs" / "selftest" / "SUMMARY.md").read_text(
+        encoding="utf-8")
+    check("a real run's SUMMARY.md actually carries all three objective lines",
+          "Waste:" in summary and ("filled" in summary or "CUT" in summary)
+          and ("API calls" in summary or "band" in summary),
+          summary[-800:])
+
+
+def section_36(c):
+    check = c.check
+    from overnight import Runner
+
+    print("36. night_filled_line reports under-cut and over-cut")
+    mock_undercut = types.SimpleNamespace(spec={"steps": []},
+                                          stop_at=time.time() + 2 * 3600)
+    line = Runner.night_filled_line(mock_undercut, "the queue finished")
+    check("finishing over an hour before the stop time is UNDER-CUT",
+          "UNDER-CUT" in line, line)
+
+    mock_overcut = types.SimpleNamespace(spec={"steps": [
+        {"id": "s1", "done": {"outcome": "NOT RUN",
+                              "note": "not started: estimated 600 min against 10 min left"}},
+    ]}, stop_at=time.time() - 3600)
+    line = Runner.night_filled_line(mock_overcut, "the clock: nothing still to run fits")
+    check("a step the clock declined to start is OVER-CUT, naming it",
+          "OVER-CUT" in line and "s1" in line, line)
+
+    mock_filled = types.SimpleNamespace(spec={"steps": []}, stop_at=time.time() - 3600)
+    line = Runner.night_filled_line(mock_filled, "the queue finished")
+    check("neither signal tripping reports the night as filled",
+          "filled" in line and "UNDER-CUT" not in line, line)
+
+
+def section_37(c):
+    check = c.check
+    from overnight import Runner
+
+    print("37. step_size_line flags a build step outside 15-80 API calls")
+
+    def assistant_lines(n):
+        return "\n".join(json.dumps({"type": "assistant",
+                                     "message": {"id": f"m{i}",
+                                                "usage": {"input_tokens": 1}}})
+                         for i in range(n))
+
+    def stepsize_mock(root, name, n_calls):
+        out = root / name
+        step_dir = out / "s1"
+        step_dir.mkdir(parents=True)
+        (step_dir / "attempt-1.log").write_text(assistant_lines(n_calls), encoding="utf-8")
+        return types.SimpleNamespace(
+            spec={"steps": [{"id": "s1", "kind": "build", "done": {"outcome": "PASS"}}]},
+            out=out)
+
+    root = c.root
+    short = Runner.step_size_line(stepsize_mock(root, "stepsize-short", 5))
+    check("a 5-call step is flagged too short",
+          "s1" in short and "too short" in short, short)
+    long = Runner.step_size_line(stepsize_mock(root, "stepsize-long", 120))
+    check("a 120-call step is flagged too long",
+          "s1" in long and "too long" in long, long)
+    banded = Runner.step_size_line(stepsize_mock(root, "stepsize-band", 40))
+    check("a 40-call step in the 15-80 band is not flagged",
+          "s1" not in banded and "band" in banded, banded)
+
+
 SECTIONS = [
     # key   needs        checks  function
     ("1",   (),          70,   section_1_3,
@@ -2815,6 +2921,9 @@ SECTIONS = [
     ("32",  (),          3,   section_32, "a running step spans the stop time"),
     ("33",  (),          2,   section_33, "OVER BUDGET's exit code"),
     ("34",  (),          2,   section_34, "choose() never declines a review for the clock"),
+    ("35",  (),          6,   section_35, "waste_share_line: landed, judgement, waste"),
+    ("36",  (),          3,   section_36, "night_filled_line: under-cut and over-cut"),
+    ("37",  (),          3,   section_37, "step_size_line: outside 15-80 API calls"),
 ]
 
 TOTAL_CHECKS = sum(s[2] for s in SECTIONS)

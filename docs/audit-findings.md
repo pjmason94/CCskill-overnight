@@ -77,6 +77,26 @@ appendix after that.
   attempt); `OVER BUDGET`'s exit code is 1 (new section 33); `choose()` never
   declines a review for the clock, called directly with the stop time an hour
   in the past rather than timed through a subprocess (new section 34).
+- **Phase 6** (section F, the efficiency objective) landed 2026-09-09,
+  genuinely last as planned - it changes the outcome vocabulary phases 2 and
+  4 already settled. The 2x-vs-interactive bar is retired to a footnote in
+  `docs/token-efficiency.md` carrying its measurement; `CLAUDE.md` states the
+  three objectives agreed 2026-09-08 instead. `overhead_line()` is replaced
+  by three methods, each a new line in `SUMMARY.md`: `waste_share_line()`
+  (landed/judgement/waste, a new `WASTE_OUTCOMES` set, 20% ceiling, reported
+  and monitored, never gated), `night_filled_line()` (under-cut if the queue
+  finished over an hour early, over-cut if the clock declined to start a
+  step - reads the `reason` `write_summary` already carries), `step_size_line()`
+  (a build step outside 15-80 API calls, counted by a new `count_api_calls()`
+  helper reading the step's own logs, mirroring `tools/tally.py`'s
+  call-counting without importing it). Tested directly against a mock
+  Runner rather than through a live run (new sections 35-37, 12 checks) - the
+  fake worker's logs carry no per-call usage records at all outside the
+  `pass-rewoken` fixture, so unit-testing the pure functions is both cheaper
+  and more deterministic than orchestrating specific outcome combinations
+  through a subprocess. One of the three (section 35) also proves the
+  wiring against a real run's `SUMMARY.md`, not just the functions in
+  isolation.
 
 Everything else stands.
 

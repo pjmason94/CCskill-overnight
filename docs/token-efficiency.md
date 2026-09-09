@@ -15,9 +15,24 @@ runner and the harness already write; nothing was estimated.
 > event, and it was run the day *after* this sample was taken. Nothing here was
 > re-measured because nothing here needed to be.
 
-The objective this serves is in `CLAUDE.md`: an unattended run must not be
-significantly more token-hungry than doing the same work interactively. Some
-overhead is the price of nobody being awake. 2x is not acceptable.
+The objective this serves is in `CLAUDE.md`: a bounded waste share, a filled
+night, and each step sized to the floor of the cost curve below. It used to
+be a single per-call bar - see the footnote.
+
+> **Footnote: the old bar, and why it retired (2026-09-09).** Before this, the
+> objective here was "not significantly more token-hungry than the same work
+> done interactively - 2x is not acceptable." Measured, it was met with room
+> to spare: per API call a headless worker costs what an interactive one
+> costs (56/25/19 against 57/28/15 below), and against a long interactive
+> session it is roughly 2x *cheaper*, by two independent denominators. The
+> risk the bar defended against never materialised. Meanwhile the three ways
+> a night actually fails sat outside it entirely: **the plan runs out** (a
+> long interactive session sat idle for 69% of its night, finishing at
+> 01:36); **a step is mis-cut** (`5b-report` ran 2.27x its estimate over two
+> attempts, and a step that carries two deliverables costs the square of its
+> call count); **work is spent and not landed** (discarded attempts, reverts,
+> reworks that fail, sixteen `STUCK` steps in ten minutes at the wall). None
+> of those is a per-call number, so a per-call bar could not see them.
 
 ## The one-line answer
 

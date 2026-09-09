@@ -163,6 +163,15 @@ OVER_BUDGET = "OVER BUDGET"
 BUDGET_SUBTYPE = "error_max_budget_usd"
 KINDS = ("build", "review", "reflect", "gate")
 EFFORTS = ("low", "medium", "high")
+# The efficiency objective's WASTE bucket (docs/audit-findings.md section F,
+# agreed by Paul 2026-09-08): spend where nothing usable resulted and nothing
+# was learned - as distinct from JUDGEMENT (a review, reflect or diagnostic
+# that did its job, even if the verdict was negative) and LANDED (a build
+# step whose commit is on the branch). A step's own outcome decides its
+# bucket; kind decides the rest (build-and-not-waste is landed, anything else
+# is judgement).
+WASTE_OUTCOMES = {"STUCK", "HALTED", "OVER BUDGET", "BARREN", "INCONCLUSIVE",
+                  "REFLECT INCONCLUSIVE", "REVIEW REWORK FAILED", "REVERTED BY REVIEW"}
 # Measured on the FinKit run of 2026-09-05/07, same project and comparable
 # context: sonnet workers cost $0.051 an API call against opus at $0.090, and
 # nothing in that ledger makes sonnet the weak link - both steps that burned a
@@ -388,6 +397,34 @@ def read_text(path, limit=None):
     if limit and len(text) > limit:
         return text[:limit] + f"\n\n...[{len(text) - limit} chars elided]...\n"
     return text
+
+
+def count_api_calls(log_path):
+    """Distinct API calls (assistant messages carrying usage) in a worker log.
+
+    Mirrors `tools/tally.py`'s call-counting rather than importing it - that
+    script also tallies tool names and byte sizes for a human reading one log
+    by hand, which this has no use for. One call can span several JSON lines
+    (output accumulates across blocks of the same message id), so the count is
+    of distinct ids, not of lines.
+    """
+    text = read_text(log_path)
+    if not text:
+        return 0
+    ids = set()
+    for line in text.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message") or {}
+        if message.get("usage") and message.get("id"):
+            ids.add(message["id"])
+    return len(ids)
 
 
 # ---------------------------------------------------------------------------
@@ -2292,7 +2329,10 @@ class Runner:
                if step.get("brief") else ""))
 
     def reflect_brief(self, step, pending):
-        summary = self.summary_table()
+        # Not "the queue finished" - the run is still going, so the under-cut
+        # half of night_filled_line (which only applies at the very end) stays
+        # silent here regardless of how much clock is left.
+        summary = self.summary_table("(in progress)")
         decisions = self.run_cfg.get("decisions_file", DEFAULT_DECISIONS)
         rel_spec = self.spec_path.relative_to(self.repo).as_posix()
         return (
@@ -2847,7 +2887,7 @@ class Runner:
         return {"outcome": outcome, "note": failed}
 
     # -- reporting -----------------------------------------------------------
-    def summary_table(self):
+    def summary_table(self, reason):
         rows = ["| step | kind | outcome | min | est | note |",
                 "|---|---|---|---|---|---|"]
         for step in self.spec["steps"]:
@@ -2878,48 +2918,106 @@ class Runner:
             rows.append("")
         rows.append("\nCumulative worker cost over every step this plan has run,"
                     f" not just this session (self-reported): ${self.cost_so_far():.2f}")
-        rows.append("\n" + self.overhead_line())
+        rows.append("\n" + self.waste_share_line())
+        rows.append("\n" + self.night_filled_line(reason))
+        rows.append("\n" + self.step_size_line())
         return "\n".join(rows)
 
-    def overhead_line(self):
-        """What the run spent on not-building, in one sentence.
+    def waste_share_line(self):
+        """Objective 1: waste share of spend is bounded (CLAUDE.md, section F).
 
-        The efficiency bar (project CLAUDE.md) is that an unattended run must not
-        cost far more than the same work done interactively, and the measurement
-        behind it found the risk is STRUCTURAL, not per-call: review, reflect,
-        rework and discarded attempts were 26% of the first real run. That is a
-        number the operator should see every morning, not one a document asserts.
-
-        Two halves, and they are not equally exact. The KIND split is exact: a
-        review or a reflect is a whole step with its own ledger entry, and a
-        rework's cost is moved onto the review that ordered it (run_review). The
-        retried/reworked COUNTS are indicative only - the ledger keeps one cost
-        per step, so a build step's discarded attempts are inside its own figure
-        and cannot be separated from the attempt that worked.
+        Three buckets, by outcome (WASTE_OUTCOMES) then by kind. Not equally
+        exact: LANDED and JUDGEMENT are exact - a step is a whole ledger entry,
+        and a failed rework's cost is already moved onto the review that
+        ordered it (run_review). The retried/reworked COUNTS folded into the
+        landed figure are indicative only, because the ledger keeps one cost
+        per step and cannot separate a build step's discarded attempts from
+        the one that worked.
         """
-        build = overhead = 0.0
+        landed = judgement = waste = 0.0
         retried = reworked = 0
         for step in self.spec["steps"]:
             entry = step.get("done")
             if not entry:
                 continue
             cost = float(entry.get("cost_usd") or 0)
-            if step["kind"] == "build":
-                build += cost
+            outcome = entry.get("outcome")
+            if outcome in WASTE_OUTCOMES:
+                waste += cost
+            elif step["kind"] == "build":
+                landed += cost
                 retried += 1 if (entry.get("attempts") or 1) > 1 else 0
                 reworked += 1 if entry.get("reworked") else 0
             else:
-                overhead += cost
-        total = build + overhead
+                judgement += cost
+        total = landed + judgement + waste
         if not total:
-            return "No worker cost recorded, so no overhead split."
-        share = overhead / total * 100
-        return (f"Of that, **${overhead:.2f} ({share:.0f}%) was not building**:"
-                f" review and reflect steps, and the rework they ordered. Build"
-                f" steps ${build:.2f}, of which {retried} needed more than one"
-                f" attempt and {reworked} were reworked after a review - that"
-                " spend is inside the build figure, because the ledger keeps one"
-                " cost per step.")
+            return "No worker cost recorded, so no waste-share split."
+        share = waste / total * 100
+        verdict = "OVER the 20% ceiling" if share > 20 else "within the 20% ceiling"
+        return (f"**Waste: ${waste:.2f} ({share:.0f}% of spend, {verdict})** -"
+                f" STUCK, HALTED, OVER BUDGET, BARREN, an inconclusive review or"
+                f" reflect, a reverted step, a rework that failed. Judgement"
+                f" (review, reflect, diagnostic that did its job): ${judgement:.2f}."
+                f" Landed (build steps on the branch): ${landed:.2f}, of which"
+                f" {retried} needed more than one attempt and {reworked} were"
+                " reworked after a review - that spend is inside the landed"
+                " figure, because the ledger keeps one cost per step. A breach"
+                " is reported and monitored, never gated.")
+
+    def night_filled_line(self, reason):
+        """Objective 2: the night is filled (neither under-cut nor over-cut).
+
+        Two deterministic signals, both already in the log: the queue
+        finishing more than an hour before the stop time (under-cut), and any
+        step `NOT RUN` because the clock declined to start it (over-cut, or
+        badly ordered) - as opposed to a `NOT RUN` the usage wall produced,
+        which is the environment's fault and not the plan's.
+        """
+        notes = []
+        if reason == "the queue finished":
+            spare = (self.stop_at - time.time()) / 3600
+            if spare > 1:
+                notes.append(f"the plan finished {spare:.1f} h before the stop"
+                            " time - UNDER-CUT, there was room for more")
+        skipped = [s["id"] for s in self.spec["steps"]
+                  if (s.get("done") or {}).get("outcome") == NOT_RUN
+                  and "not started: estimated" in str(s["done"].get("note", ""))]
+        if skipped:
+            notes.append(f"{len(skipped)} step(s) never started because the clock"
+                        f" declined them - OVER-CUT, or badly ordered:"
+                        f" {', '.join(skipped)}")
+        if not notes:
+            return "The night was filled: neither under-cut nor over-cut by either signal."
+        return "**Not filled** - " + "; ".join(notes) + "."
+
+    def step_size_line(self):
+        """Objective 3: each step sits on the floor of the U.
+
+        Cost per API call is dear at both ends of a step's call count and
+        cheapest around 20-55 calls (docs/token-efficiency.md); a step
+        outside 15-80 is flagged in the direction it missed. Call counts come
+        straight from the logs the run already wrote - no new measurement.
+        """
+        flagged = []
+        for step in self.spec["steps"]:
+            entry = step.get("done")
+            if not entry or step["kind"] != "build" or entry.get("outcome") != "PASS":
+                continue
+            step_dir = self.out / dir_name(step["id"])
+            if not step_dir.is_dir():
+                continue
+            calls = sum(count_api_calls(p) for p in step_dir.glob("*.log")
+                       if p.name not in ("diagnostic.log", "gates.log"))
+            if calls and calls < 15:
+                flagged.append(f"`{step['id']}` ({calls} calls, too short - cold-start"
+                              " overhead dominates)")
+            elif calls > 80:
+                flagged.append(f"`{step['id']}` ({calls} calls, too long - context"
+                              " growth dominates)")
+        if not flagged:
+            return "Every step's call count sat in band (15-80 calls, floor at 20-55)."
+        return "**Mis-cut steps** (outside 15-80 calls): " + "; ".join(flagged) + "."
 
     def write_summary(self, reason):
         stopped = dt.datetime.now()
@@ -2963,7 +3061,7 @@ class Runner:
                       f" costing ${self.probe_cost:.2f}. That time was not work and"
                       " did not extend the stop time, so the per-hour figures below"
                       " are hours, not effort.", ""]
-        lines += [self.summary_table(), "",
+        lines += [self.summary_table(reason), "",
                  "## Read next", "",
                  f"- `{self.out.relative_to(self.repo).as_posix()}/run.log`, then each step's directory.",
                  f"- `{self.run_cfg.get('decisions_file', DEFAULT_DECISIONS)}`.",
