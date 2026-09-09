@@ -395,7 +395,10 @@ What happens on `rework` or `fail` is the step's `on_fail`:
   commit, with the findings appended to the original brief. If it passes its
   gates, the step's commit is updated and the review is recorded REVIEW REWORK
   PASS. If not, the reviewed commit stands and the review is recorded REVIEW
-  REWORK FAILED.
+  REWORK FAILED - a BLOCKING outcome (section 9). A reviewer found the commit
+  wanting and a rework attempt failed to repair it; a person decides whether
+  the unfixed findings matter before anything builds on top of that commit,
+  and relaunching does not retry it on its own.
 - `revert` - reset to the commit before the reviewed one; the reviewed step
   becomes REVERTED BY REVIEW.
 
@@ -835,11 +838,15 @@ step id.
 block on each step, committed as they happen. Relaunching with the same spec
 skips every step that completed: PASS, a review that ran, a reflect that ran,
 anything SKIPPED for a reason that will not change. It re-runs a step that did
-not complete: STUCK, FAIL, HALTED, INCONCLUSIVE, REWORK FAILED, REVERTED BY
+not complete: STUCK, FAIL, HALTED, INCONCLUSIVE, REVERTED BY
 REVIEW, NOT RUN, OVER BUDGET, REFLECT INCONCLUSIVE, BARREN, and a review SKIPPED
-because its subject had not passed. `NEEDS MERGE` is the one outcome that is **blocking and yet complete**:
-its work exists on a scratch branch, so re-running the step would do it a second
-time. A person lands the branch, and the relaunch carries on from the next step.
+because its subject had not passed. `NEEDS MERGE` and `REVIEW REWORK FAILED`
+are **blocking and yet complete**: the former's work exists on a scratch
+branch, so re-running the step would do it a second time - a person lands the
+branch, and the relaunch carries on from the next step. The latter's reviewed
+commit stands and a rework already failed once - a person decides whether the
+unfixed findings matter, and relaunching does not spend another rework on the
+same verdict.
 `--rerun`
 re-runs passed steps too; `--reset-state` strips every `done:` from the plan,
 commits that, and **exits**. It is an exclusive action, like `--list` and
@@ -852,7 +859,7 @@ starting the plan again is the next command, typed deliberately. (Until
 
 | it prints | when | exit |
 |---|---|---|
-| `BLOCKED` | a step is STUCK, HALTED, OVER BUDGET, NEEDS MERGE or BARREN - it needs a person | 3 |
+| `BLOCKED` | a step is STUCK, HALTED, OVER BUDGET, NEEDS MERGE, REVIEW REWORK FAILED or BARREN - it needs a person | 3 |
 | `PLAN` | there is no plan file | 0 |
 | `RUN` | steps are still to run | 0 |
 | `REPLACE?` | every step completed | 0 |

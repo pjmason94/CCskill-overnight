@@ -196,6 +196,20 @@ rather than copied into each caller.
   lint or hygiene check lived in `run.gates` got none of it there, despite the
   README saying it does. `run_gate_step` now uses `all_gates` too.
 
+- **`REVIEW REWORK FAILED` is now a blocking outcome, and `--mode` says so.**
+  A reviewer found a commit wanting, one more build attempt failed to repair
+  it, and the run used to carry straight on with the reviewed commit standing
+  and nothing telling a person to look. It is documented as re-run on
+  relaunch under the bare name `REWORK FAILED`, but that name is never
+  actually written to the ledger - the review step records its own outcome
+  as `REVIEW REWORK FAILED`, which was in neither `RERUN_OUTCOMES` nor
+  `BLOCKING_OUTCOMES`, so the dead name in the former was doing nothing and
+  the real one was doing nothing either. `REVIEW REWORK FAILED` is now in
+  `BLOCKING_OUTCOMES` (`--mode` reports `BLOCKED`); the dead bare name is
+  removed. **Decided by Paul, 2026-09-08: blocking, not resumed** - a rework
+  that already failed once should not spend another opus pass on the same
+  verdict without a person deciding the findings still matter first.
+
 - Wording, all found by the same audit: the composed brief's order omitted the
   tool-usage note that sits between the header and the brief; `--progress` and
   `--run` were missing from the flag table; the layout diagram omitted

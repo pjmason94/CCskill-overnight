@@ -198,17 +198,20 @@ re-dumps the file, because that would destroy comments, key order and quoting.
 ## Resume
 
 A step is complete iff it carries `done:` with an outcome outside `STUCK`,
-`HALTED`, `FAIL`, `INCONCLUSIVE`, `SKIPPED`, `REWORK FAILED`,
+`HALTED`, `FAIL`, `INCONCLUSIVE`, `SKIPPED`,
 `REVERTED BY REVIEW`, `NOT RUN`, `OVER BUDGET`, `REFLECT INCONCLUSIVE` and
 `BARREN`. A relaunch skips what completed and re-runs the rest.
 `--rerun` forces everything; `--reset-state` strips every `done:` from the file,
 commits that and exits without launching - the flag has outlived the file it was
 named for.
 
-`NEEDS MERGE` is the exception to both halves: it is **complete** for the resume
-(the work exists on its scratch branch and re-running the step would do it twice)
-and it is **blocking**, so a person lands the branch before the run goes on.
+`NEEDS MERGE` and `REVIEW REWORK FAILED` are the exception to both halves: each
+is **complete** for the resume - the former's work exists on its scratch branch
+and re-running the step would do it twice, the latter's reviewed commit stands
+and a rework already failed once - and each is **blocking**, so a person acts
+before the run goes on.
 
 `--mode` prints what to do next from the plan alone: `BLOCKED` (a STUCK, HALTED,
-OVER BUDGET, NEEDS MERGE or BARREN step needs a person; exits 3), `PLAN` (no plan file),
+OVER BUDGET, NEEDS MERGE, REVIEW REWORK FAILED or BARREN step needs a person;
+exits 3), `PLAN` (no plan file),
 `RUN` (steps still to run) or `REPLACE?` (everything completed).

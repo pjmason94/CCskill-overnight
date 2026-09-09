@@ -48,6 +48,14 @@ is wrong with the work or the ground. The work exists, it passed, and only a
 person can say how it should land. The run stops rather than carrying on because
 every later step would otherwise build on a tree the plan did not intend.
 
+**REVIEW REWORK FAILED** - a reviewer found the committed step's work wanting,
+one more build attempt tried to fix it on top of that commit, and the fix
+attempt failed its own gates. The reviewed commit still stands - nothing was
+reverted, nothing was reworked into it - and the run stops rather than
+building on top of a commit a reviewer flagged and a rework already failed to
+repair: a person decides whether the original findings still matter before
+anything else depends on it.
+
 **BARREN** - this step's workers would not start. They exited non-zero having
 produced no result event at all, `run.wall_threshold` in a row (three by
 default), twice over - and between the two the runner's probe got an answer, so
@@ -91,17 +99,25 @@ and find any of it.
    that the work **passed its gates** where it was built and that nothing has
    been lost or discarded. If the step's directory has a `stranded.log`, that
    is the gate output for work an earlier run left behind; quote its verdict.
-6. **Anything that step wrote to `overnight/DECISIONS-PENDING.md`.** Workers are
+6. **For REVIEW REWORK FAILED - the review's findings, and what the rework
+   attempt did about them.** Both are recoverable: `verdict.json` in the
+   review step's directory has the findings the reviewer graded, and the
+   rework attempt's own log (in the reviewed step's directory) shows what it
+   tried and which gate stopped it. Say plainly that the reviewed commit
+   **still stands** - nothing was reverted - and that this is a judgement
+   call, not a broken build: a person decides whether the findings matter
+   enough to block on.
+7. **Anything that step wrote to `overnight/DECISIONS-PENDING.md`.** Workers are
    told to write findings there as they learn them, so a step that got into
    trouble has usually said why.
-7. **For BARREN - the command, and what it printed.** Both are in the `note:`:
+8. **For BARREN - the command, and what it printed.** Both are in the `note:`:
    the exact argv of the last worker that produced nothing, and the first 400
    characters it wrote. Put them in front of the user and say which key you
    think is wrong - compare the `--model` and `--effort` on that line against
    the step's `model:`, `effort:` and `budget_usd:` in the plan, and against
    `run.defaults`. This is usually a one-character fix and the user should not
    have to go and find it.
-8. **What else was in flight**: how many steps remain, and whether any of them
+9. **What else was in flight**: how many steps remain, and whether any of them
    depend on this one. A stuck step that nothing depends on is a different
    conversation from one that four steps build on.
 
@@ -156,6 +172,24 @@ Run the step's gates yourself after landing it. They passed on the scratch
 branch, against a tree that is not quite this one, and the merge is exactly the
 event that can break that. If the plan has a `kind: gate` checkpoint, its command
 is the one to run.
+
+**For REVIEW REWORK FAILED the commands above do nothing by default** - the
+reviewed commit is recorded complete, so a plain relaunch skips both the step
+and its review and carries on from the next one. That is the right move if
+the user accepts the reviewed commit as it stands:
+
+    # accept the reviewed commit and carry on with the rest
+    python <skill dir>/overnight.py --spec <abs>/overnight/steps.yaml --from <next id>
+
+If instead the findings matter and the user wants another rework attempt -
+typically after editing the brief, or fixing the code by hand and committing
+it themselves - force the review to run again:
+
+    # re-review the same commit (or one the user amended by hand)
+    python <skill dir>/overnight.py --spec <abs>/overnight/steps.yaml --only <review id> --rerun
+
+Without `--rerun` this does nothing: the review step is recorded complete and
+`--only` alone does not override that.
 
 **For BARREN the fix is in the plan, not in the tree.** Correct the step's
 `model`, `effort` or `budget_usd` (or `run.defaults`), then re-run that step

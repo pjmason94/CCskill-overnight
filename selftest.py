@@ -2454,6 +2454,47 @@ def section_26(c):
           gate_log[-500:])
 
 
+# T5 / F5: a REWORK verdict whose one build attempt fails its own gates
+# recorded `REVIEW REWORK FAILED` - previously in `RERUN_OUTCOMES` under the
+# bare (unreachable) name `REWORK FAILED`, so it was neither resumed nor
+# blocking, despite `README.md` documenting it as re-run on relaunch. Paul's
+# decision, 2026-09-08: blocking, not resumed - a reviewer flagged the commit
+# and a rework failed to repair it, so a person decides before anything
+# builds on top of it.
+def section_27(c):
+    root = c.root
+    check = c.check
+
+    print("27. REVIEW REWORK FAILED is blocking, and NOT resumed on relaunch")
+    where = make_repo(root / "rework-failed")
+    (where / "overnight" / "steps.yaml").write_text(SPEC, encoding="utf-8")
+    sh(where, "git", "add", "-A")
+    sh(where, "git", "commit", "-q", "-m", "rework-failed spec", check=False)
+    scen = root / "scenario-rework-failed.json"
+    scen.write_text(json.dumps({
+        "s1": ["pass"], "review:s1": ["review:rework"], "s1#rework": ["regress"],
+    }), encoding="utf-8")
+    done = run_runner(where, scen, "--only", "s1,review:s1")
+    entries = ledger(where)
+    check("a rework attempt that fails its own gates is REVIEW REWORK FAILED",
+          entries.get("review:s1", {}).get("outcome") == "REVIEW REWORK FAILED",
+          str(entries.get("review:s1")))
+    test_file = (where / "tests" / "test_s1.py").read_text(encoding="utf-8")
+    check("...and the reviewed commit is left standing, not the regression",
+          "assert True" in test_file, test_file)
+    mode = subprocess.run([sys.executable, str(RUNNER), "--mode", str(where)],
+                         capture_output=True, text=True)
+    check("--mode reports the plan as BLOCKED - it needs a person",
+          mode.stdout.strip().startswith("BLOCKED"), mode.stdout)
+    review_step = next(s for s in yaml.safe_load(spec_text(where))["steps"]
+                      if s["id"] == "review:s1")
+    check("...and it is NOT resumable - a plain relaunch skips it rather than"
+          " retrying it",
+          not is_resumable(review_step), str(review_step.get("done")))
+    check("the run's own exit code is non-zero too",
+          done.returncode != 0, str(done.returncode))
+
+
 SECTIONS = [
     # key   needs        checks  function
     ("1",   (),          70,   section_1_3,
@@ -2481,6 +2522,7 @@ SECTIONS = [
     ("24",  (),          20,   section_24, "the clock: --until, and the stop it enforces"),
     ("25",  (),          30,   section_25, "expected_min is required, and it schedules"),
     ("26",  (),          4,   section_26, "a `kind: gate` checkpoint runs the universal gates"),
+    ("27",  (),          5,   section_27, "REVIEW REWORK FAILED is blocking, not resumed"),
 ]
 
 TOTAL_CHECKS = sum(s[2] for s in SECTIONS)

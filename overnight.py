@@ -114,7 +114,11 @@ NO_GIT_NOTICE = (
     " skipped (there is no commit to read); a reflect step's plan change is not"
     " committed. Gates and workers otherwise run normally.")
 
-RERUN_OUTCOMES = {"STUCK", "FAIL", "INCONCLUSIVE", "SKIPPED", "REWORK FAILED",
+# No bare "REWORK FAILED" here: `run_build` returns it internally when called
+# with `rework=`, but the caller (`run_review`) never records it under that
+# name - it records its OWN entry as "REVIEW REWORK FAILED" instead, which is
+# blocking and deliberately NOT in this set (see BLOCKING_OUTCOMES below).
+RERUN_OUTCOMES = {"STUCK", "FAIL", "INCONCLUSIVE", "SKIPPED",
                   "REVERTED BY REVIEW", "HALTED", "NOT RUN", "OVER BUDGET",
                   "REFLECT INCONCLUSIVE", "BARREN"}
 
@@ -3371,8 +3375,10 @@ quoting all survive, and an edit that would change another step is refused.
       added: [..]  removed: [..] # a reflect that changed the plan
 
 A step is COMPLETE iff its `done.outcome` is outside STUCK, HALTED, FAIL,
-INCONCLUSIVE, SKIPPED, REWORK FAILED, REVERTED BY REVIEW, NOT RUN, OVER BUDGET,
+INCONCLUSIVE, SKIPPED, REVERTED BY REVIEW, NOT RUN, OVER BUDGET,
 REFLECT INCONCLUSIVE and BARREN; anything else is re-run on resume.
+REVIEW REWORK FAILED is complete but BLOCKING - the reviewed commit stands
+and a person decides what happens next.
 `--reset-state` strips every
 `done:` and commits that.
 `--mode` reads the plan alone and prints BLOCKED, PLAN, RUN or REPLACE?.
@@ -3411,7 +3417,14 @@ def find_runs(where):
 # it, but not until a person has changed something about the step or the cap.
 # BARREN is in both for the same reason - the step's own tier or budget is what
 # needs changing, and a resume that came round again without that would loop.
-BLOCKING_OUTCOMES = ("STUCK", "HALTED", "NEEDS MERGE", OVER_BUDGET, BARREN)
+# REVIEW REWORK FAILED is the same shape as NEEDS MERGE: a reviewer found the
+# commit wanting and a rework attempt failed to repair it, so the reviewed
+# commit stands and nothing here is undone. Re-running would review the same
+# sha again and likely spend another opus rework on the same verdict - a
+# person decides whether the unfixed findings matter before anything builds
+# on top of that commit (Paul, 2026-09-08).
+BLOCKING_OUTCOMES = ("STUCK", "HALTED", "NEEDS MERGE", "REVIEW REWORK FAILED",
+                    OVER_BUDGET, BARREN)
 
 
 def print_mode(where):

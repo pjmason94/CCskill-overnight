@@ -39,6 +39,30 @@ appendix after that.
   README already said. T3 (new section 26) proves the defect first: a
   universal gate that could not itself fail preflight was invisible in a
   checkpoint's `gates.log` before the fix and present after it.
+- **Phase 4c** (F5) landed 2026-09-09, per Paul's 2026-09-08 decision: blocking,
+  not resumed. **F5 is fixed.** `"REVIEW REWORK FAILED"` is now in
+  `BLOCKING_OUTCOMES`; the dead, unreachable bare `"REWORK FAILED"` is removed
+  from `RERUN_OUTCOMES` (it never reached the ledger under that name - see the
+  finding text below); `README.md`, `references/spec-format.md` and
+  `references/blocked.md` now document it as blocking and complete, not
+  re-run. T5 (new section 27, 5 checks) proves it end to end: a rework attempt
+  that fails its own gates records `REVIEW REWORK FAILED`, `--mode` reports
+  `BLOCKED`, the step is not resumable, and the run's own exit code is
+  non-zero.
+
+  **A related question surfaced while writing T5, out of this phase's
+  scope.** The reset that follows a failed rework rolls the branch back to
+  the REVIEWED commit - correctly, that is what leaves "the reviewed commit
+  still stands" true - but that reviewed commit sits BEFORE the ledger splice
+  that recorded the underlying build step's own `done: PASS`. The reset
+  discards that splice commit too (tagged `rescue/<step>-rework/N`, not
+  lost), so the build step's `done:` block is gone from the spec afterward,
+  not the review's. A bare relaunch (skipping the skill's `--mode` gate, which
+  is where `BLOCKING_OUTCOMES` is actually enforced today - the runner itself
+  does not consult it) would see the build step as still-to-run and rebuild it
+  from scratch, while the blocking review step still names the OLD sha. Not
+  investigated further; flagged for Paul's judgement on whether it is worth a
+  fix and what shape one would take.
 
 Everything else stands.
 

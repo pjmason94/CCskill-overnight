@@ -57,6 +57,10 @@ Behaviours:
                 worker's half-built file is still in the tree AND the brief says
                 it is a continuation, so it proves the handover really happened
   commit-wrong  commit real work but not the test the gate demands
+  regress       overwrite an already-passing test with a failing one and commit
+                it - the only way a REWORK attempt on top of a passing step
+                fails its own gate, since the gate runs against the tree as it
+                stands and the original passing commit is still there
   foreign-commit  a THIRD PARTY commits to the branch during the step, gate fails
   pass+main:unrelated   the worker passes in its own tree while a third party
                 commits something unrelated to the operator's branch
@@ -348,6 +352,22 @@ def main():
         emit({"type": "user", "message": {"content": [
             {"type": "tool_result", "is_error": True, "content": "Error: pretend failure"}]}})
         return result(f"{key}: did nothing")
+    if behaviour == "regress":
+        # A REWORK attempt that makes things WORSE: the step already has a
+        # passing commit (gates run against the tree as it stands, not a
+        # fresh one), so failing to add anything - or committing something
+        # extra alongside it, as `commit-wrong` does - still leaves the
+        # original test passing. This overwrites it with a failing one and
+        # commits that, which is the only way a rework attempt on top of an
+        # already-passing step actually fails its own gate.
+        tests = repo / "tests"
+        tests.mkdir(exist_ok=True)
+        path = tests / f"test_{safe}.py"
+        path.write_text(f"def test_{safe}():\n    assert False  # regressed by rework\n",
+                        encoding="utf-8")
+        git(repo, "add", str(path.relative_to(repo).as_posix()))
+        git(repo, "commit", "-q", "-m", f"fake: {key} regressed the passing test")
+        return result(f"{key}: committed a regression")
     if behaviour == "diag":
         (out / step).mkdir(parents=True, exist_ok=True)
         (out / step / "remediation.md").write_text("# remediation\n\nDo the thing properly.\n",
