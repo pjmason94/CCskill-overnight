@@ -398,7 +398,11 @@ What happens on `rework` or `fail` is the step's `on_fail`:
   REWORK FAILED - a BLOCKING outcome (section 9). A reviewer found the commit
   wanting and a rework attempt failed to repair it; a person decides whether
   the unfixed findings matter before anything builds on top of that commit,
-  and relaunching does not retry it on its own.
+  and relaunching does not retry it on its own. In-place, the failed rework's
+  reset also restores the reviewed step's own `done: PASS` block, which the
+  reset would otherwise discard along with the rework's failed commits - that
+  step already passed its own gate once, and a failed rework of it does not
+  revoke that.
 - `revert` - reset to the commit before the reviewed one; the reviewed step
   becomes REVERTED BY REVIEW.
 

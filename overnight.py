@@ -2764,6 +2764,16 @@ class Runner:
         else:
             entry["outcome"] = "REVIEW REWORK FAILED"
             entry["note"] = "rework failed its gates; the reviewed commit stands. " + entry["note"]
+            if self.isolation != "worktree":
+                # In-place, run_build's reset on the failed rework rolled the
+                # branch back to `sha` - which is BEFORE the ledger splice that
+                # recorded of_id's own PASS, so that splice was discarded along
+                # with the rework's failed commits (both tagged, not lost). of_id
+                # already passed its own gate and the full suite once; a failed
+                # rework of it does not revoke that - restore the splice rather
+                # than leave the plan believing of_id never ran, which would
+                # rebuild already-good work on the next relaunch.
+                self.update_done(of_id, {}, why=f"restored after {step['id']} rework failed")
         return entry
 
     def run_reflect(self, step):

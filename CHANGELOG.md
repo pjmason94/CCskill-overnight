@@ -130,6 +130,18 @@ All three of the above share one predicate - *did this invocation produce
 nothing?* - which is now `Runner.is_barren`, extracted from `count_barren`
 rather than copied into each caller.
 
+- **A failed rework no longer erases the build step it reviewed.** In-place, a
+  `REVIEW REWORK FAILED` reset rolls the branch back to the reviewed commit -
+  correctly, that is what leaves "the reviewed commit stands" true - but that
+  commit sits before the ledger splice that recorded the build step's own
+  `done: PASS`, so the reset discarded that splice too (tagged, not lost). The
+  build step then read as never having run, and a bare relaunch (bypassing the
+  skill's `--mode` gate) would have rebuilt already-good, already-reviewed
+  work from scratch. `run_review` now restores that step's `done: PASS` after
+  a failed rework - it already passed its own gate and the full suite once,
+  and a failed rework of it does not revoke that. Worktree isolation was never
+  affected: a failed rework there never touches the operator's branch.
+
 - **The two files a planner actually opens still told it to gate every build
   step on the full suite.** `1.0.3` corrected `references/planning.md` and the
   README and left `references/spec-format.md` and `examples/steps.example.yaml`

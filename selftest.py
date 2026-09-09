@@ -2462,7 +2462,10 @@ def section_26(c):
 # blocking, despite `README.md` documenting it as re-run on relaunch. Paul's
 # decision, 2026-09-08: blocking, not resumed - a reviewer flagged the commit
 # and a rework failed to repair it, so a person decides before anything
-# builds on top of it.
+# builds on top of it. Also proves the 2026-09-09 fix for the ledger gap this
+# same reset uncovered: in-place, the reset that leaves "the reviewed commit
+# stands" true rolls back past the ledger splice that recorded of_id's OWN
+# PASS too, so a bare relaunch would have rebuilt already-good work.
 def section_27(c):
     root = c.root
     check = c.check
@@ -2484,6 +2487,10 @@ def section_27(c):
     test_file = (where / "tests" / "test_s1.py").read_text(encoding="utf-8")
     check("...and the reviewed commit is left standing, not the regression",
           "assert True" in test_file, test_file)
+    check("...and s1's own done: PASS is restored, not lost - it already passed"
+          " its own gate and the full suite once, and a failed rework of it does"
+          " not revoke that",
+          entries.get("s1", {}).get("outcome") == "PASS", str(entries.get("s1")))
     mode = subprocess.run([sys.executable, str(RUNNER), "--mode", str(where)],
                          capture_output=True, text=True)
     check("--mode reports the plan as BLOCKED - it needs a person",
@@ -2913,7 +2920,7 @@ SECTIONS = [
     ("24",  (),          20,   section_24, "the clock: --until, and the stop it enforces"),
     ("25",  (),          30,   section_25, "expected_min is required, and it schedules"),
     ("26",  (),          4,   section_26, "a `kind: gate` checkpoint runs the universal gates"),
-    ("27",  (),          5,   section_27, "REVIEW REWORK FAILED is blocking, not resumed"),
+    ("27",  (),          6,   section_27, "REVIEW REWORK FAILED is blocking, not resumed"),
     ("28",  (),          2,   section_28, "STRIP_ENV keeps a leaked key and effort out"),
     ("29",  (),          7,   section_29, "on_fail: record and on_fail: revert"),
     ("30",  (),          3,   section_30, "the cmd_empty and fresh_shell gate forms"),

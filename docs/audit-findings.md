@@ -51,18 +51,25 @@ appendix after that.
   non-zero.
 
   **A related question surfaced while writing T5, out of this phase's
-  scope.** The reset that follows a failed rework rolls the branch back to
-  the REVIEWED commit - correctly, that is what leaves "the reviewed commit
-  still stands" true - but that reviewed commit sits BEFORE the ledger splice
-  that recorded the underlying build step's own `done: PASS`. The reset
-  discards that splice commit too (tagged `rescue/<step>-rework/N`, not
-  lost), so the build step's `done:` block is gone from the spec afterward,
-  not the review's. A bare relaunch (skipping the skill's `--mode` gate, which
-  is where `BLOCKING_OUTCOMES` is actually enforced today - the runner itself
-  does not consult it) would see the build step as still-to-run and rebuild it
-  from scratch, while the blocking review step still names the OLD sha. Not
-  investigated further; flagged for Paul's judgement on whether it is worth a
-  fix and what shape one would take.
+  scope - fixed 2026-09-09, per Paul's judgement.** The reset that follows a
+  failed rework rolls the branch back to the REVIEWED commit - correctly,
+  that is what leaves "the reviewed commit still stands" true - but that
+  reviewed commit sits BEFORE the ledger splice that recorded the underlying
+  build step's own `done: PASS`. The reset discards that splice commit too
+  (tagged `rescue/<of_id>-rework/N`, not lost), so the build step's `done:`
+  block was gone from the spec afterward, not the review's. A bare relaunch
+  (skipping the skill's `--mode` gate, which is where `BLOCKING_OUTCOMES` is
+  actually enforced today - the runner itself does not consult it) would see
+  the build step as still-to-run and rebuild already-good, already-reviewed
+  work from scratch. **The decision: the build step already passed its own
+  gate and the full suite once, and a failed rework of it does not revoke
+  that - restore the splice, never trigger a rebuild of successful work.**
+  `run_review`'s `on_fail: rework` branch now calls `self.update_done(of_id,
+  {}, why=...)` after a failed rework, in-place only (worktree isolation
+  never touches the operator's branch on a failed rework, so it was never
+  affected). Proven by extending T5 (section 27, now 6 checks): shown failing
+  first against the unfixed code (`entries.get("s1")` was `None`), passing
+  after.
 - **Phase 5** (T1, T2, T4, T6, and the three proxy-coverage upgrades) landed
   2026-09-09. Changes no behaviour; adds coverage only. T1: `fake_worker.py`
   exits 99 if any `STRIP_ENV` name reaches it (new section 28). T2: `on_fail:
